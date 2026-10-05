@@ -29,7 +29,12 @@ export default function Index() {
   const [cargando, setCargando] = useState(false);
   const [medicamentos, setMedicamentos] = useState<Medicamento[]>([]);
 
-  const peticionConTimeout = async (url: string, opciones: RequestInit, timeoutMs = 3000) => {
+  // Función auxiliar para peticiones HTTP con tiempo de espera máximo
+  const peticionConTimeout = async (
+    url: string,
+    opciones: RequestInit,
+    timeoutMs = 2000
+  ) => {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -46,57 +51,79 @@ export default function Index() {
     }
   };
 
+  // Función para escanear y encontrar la ESP32 en la red doméstica
   const buscarPastilleroEnRed = async () => {
     setBuscando(true);
 
-    try {
-      const res = await peticionConTimeout("http://pastillero.local/identificar", { method: "GET" }, 2000);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.dispositivo === "pastillero_esp32" && data.ip) {
-          setIpEsp(data.ip);
-          Alert.alert("¡Encontrado!", `Conectado al pastillero en ${data.ip}`);
-          setBuscando(false);
-          return;
+    // 1. Intentar por mDNS (pastillero.local) y por IP de AP directo
+    const destinosDirectos = ["pastillero.local", "192.168.4.1"];
+    for (const host of destinosDirectos) {
+      try {
+        const res = await peticionConTimeout(
+          `http://${host}/identificar`,
+          { method: "GET" },
+          1500
+        );
+        if (res.ok) {
+          const data = await res.json();
+          if (data.dispositivo === "pastillero_esp32") {
+            const ipFinal = data.ip || host;
+            setIpEsp(ipFinal);
+            Alert.alert("¡Encontrado!", `Conectado a la ESP32 en ${host}`);
+            setBuscando(false);
+            return;
+          }
         }
-      }
-    } catch (e) {}
+      } catch (e) {}
+    }
 
+    // 2. Escaneo de la subred local por lotes (Chunks de 15 IPs simultáneas)
     const subredes = ["192.168.1.", "192.168.0."];
     let encontrado = false;
 
     for (const subred of subredes) {
       if (encontrado) break;
 
-      const promesas = [];
-      for (let i = 2; i < 254; i++) {
-        const ipProbar = `${subred}${i}`;
-        promesas.push(
-          peticionConTimeout(`http://${ipProbar}/identificar`, { method: "GET" }, 1200)
-            .then(async (res) => {
-              if (res.ok) {
-                const data = await res.json();
-                if (data.dispositivo === "pastillero_esp32") return ipProbar;
-              }
-              return null;
-            })
-            .catch(() => null)
+      const ips: string[] = [];
+      for (let i = 2; i < 254; i++) ips.push(`${subred}${i}`);
+
+      const TAMAÑO_LOTE = 15;
+      for (let i = 0; i < ips.length; i += TAMAÑO_LOTE) {
+        const lote = ips.slice(i, i + TAMAÑO_LOTE);
+
+        const resultados = await Promise.all(
+          lote.map((ipProbar) =>
+            peticionConTimeout(
+              `http://${ipProbar}/identificar`,
+              { method: "GET" },
+              1000
+            )
+              .then(async (res) => {
+                if (res.ok) {
+                  const data = await res.json();
+                  if (data.dispositivo === "pastillero_esp32") return ipProbar;
+                }
+                return null;
+              })
+              .catch(() => null)
+          )
         );
-      }
 
-      const resultados = await Promise.all(promesas);
-      const ipEncontrada = resultados.find((ip) => ip !== null);
-
-      if (ipEncontrada) {
-        setIpEsp(ipEncontrada);
-        Alert.alert("¡Encontrado!", `Pastillero detectado en ${ipEncontrada}`);
-        encontrado = true;
-        break;
+        const ipEncontrada = resultados.find((ip) => ip !== null);
+        if (ipEncontrada) {
+          setIpEsp(ipEncontrada);
+          Alert.alert("¡Encontrado!", `Pastillero detectado en la IP ${ipEncontrada}`);
+          encontrado = true;
+          break;
+        }
       }
     }
 
     if (!encontrado) {
-      Alert.alert("No encontrado", "Verifica que el móvil y la ESP32 estén en la misma red Wi-Fi.");
+      Alert.alert(
+        "No encontrado",
+        "Asegúrate de que el celular esté conectado a la misma red Wi-Fi de la ESP32."
+      );
     }
 
     setBuscando(false);
@@ -106,12 +133,17 @@ export default function Index() {
     if (!ipEsp) return;
     setCargando(true);
     try {
-      const res = await peticionConTimeout(`http://${ipEsp}/conectar`, { method: "POST" });
+      const res = await peticionConTimeout(`http://${ipEsp}/conectar`, {
+        method: "POST",
+      });
       if (res.ok) {
-        Alert.alert("¡Conectado!", "Se mostró la confirmación de conexión en la ESP32.");
+        Alert.alert(
+          "¡Conectado!",
+          "Comunicación exitosa confirmada por la ESP32."
+        );
       }
     } catch (e) {
-      Alert.alert("Error", "No se pudo comunicar con el pastillero.");
+      Alert.alert("Error", "No se pudo establecer comunicación con el pastillero.");
     } finally {
       setCargando(false);
     }
@@ -132,7 +164,10 @@ export default function Index() {
     diasArray: string[]
   ) => {
     if (!ipEsp) {
-      Alert.alert("Sin conexión", "Agendado localmente. Recuerda vincular el pastillero.");
+      Alert.alert(
+        "Guardado local",
+        "Horario guardado en la app. Recuerda vincular la ESP32 para sincronizar la alarma física."
+      );
       return;
     }
 
@@ -148,17 +183,21 @@ export default function Index() {
           hora: horaNum,
           minuto: minutoNum,
           dias: diasArray,
-          horaActual: ahora.getHours(),
-          minutoActual: ahora.getMinutes(),
-          segundoActual: ahora.getSeconds(),
+          mensaje: `Hora de tomar ${nombreMed}`,
+          epoch: Math.floor(ahora.getTime() / 1000),
         }),
       });
 
       if (response.ok) {
-        Alert.alert("¡Guardado!", `Alarma de las ${horaNum}:${minutoNum < 10 ? '0' : ''}${minutoNum} enviada a la ESP32.`);
+        Alert.alert(
+          "¡Alarma Enviada!",
+          `Se programó ${nombreMed} para las ${horaNum}:${
+            minutoNum < 10 ? "0" : ""
+          }${minutoNum} hs.`
+        );
       }
     } catch (error) {
-      Alert.alert("Error", "No se pudo transmitir la alarma a la ESP32.");
+      Alert.alert("Error de transmisión", "No se pudo enviar la alarma a la ESP32.");
     } finally {
       setCargando(false);
     }
@@ -166,21 +205,28 @@ export default function Index() {
 
   const agregarMedicamento = () => {
     if (!tipo.trim() || !hora.trim() || diasSeleccionados.length === 0) {
-      Alert.alert("Atención", "Completá todos los campos.");
+      Alert.alert("Atención", "Por favor completa todos los campos.");
       return;
     }
 
     const partesHora = hora.split(":");
     if (partesHora.length !== 2) {
-      Alert.alert("Formato inválido", "Usa HH:MM (ej. 17:30)");
+      Alert.alert("Formato incorrecto", "Escribe la hora con formato HH:MM (ejemplo: 17:30)");
       return;
     }
 
     const horaNum = parseInt(partesHora[0], 10);
     const minutoNum = parseInt(partesHora[1], 10);
 
-    if (isNaN(horaNum) || isNaN(minutoNum) || horaNum < 0 || horaNum > 23 || minutoNum < 0 || minutoNum > 59) {
-      Alert.alert("Hora inválida", "Ingresá valores entre 00:00 y 23:59");
+    if (
+      isNaN(horaNum) ||
+      isNaN(minutoNum) ||
+      horaNum < 0 ||
+      horaNum > 23 ||
+      minutoNum < 0 ||
+      minutoNum > 59
+    ) {
+      Alert.alert("Hora no válida", "Ingresa un horario entre 00:00 y 23:59");
       return;
     }
 
@@ -204,15 +250,18 @@ export default function Index() {
   };
 
   return (
-    <ScrollView style={styles.pantalla} contentContainerStyle={styles.contenedor}>
+    <ScrollView
+      style={styles.pantalla}
+      contentContainerStyle={styles.contenedor}
+    >
       <Text style={styles.titulo}>💊 Control de Pastillero</Text>
       <Text style={styles.subtitulo}>Asistente Automatizado de Medicación</Text>
 
-      {/* VINCULACIÓN */}
+      {/* SECCIÓN DE VINCULACIÓN */}
       <View style={styles.configIpContainer}>
         <Text style={styles.etiqueta}>Estado del Dispositivo</Text>
         <Text style={styles.textoEstado}>
-          {ipEsp ? `✅ Conectado a: ${ipEsp}` : "⚠ Pastillero no vinculado"}
+          {ipEsp ? `✅ Conectado a: ${ipEsp}` : "⚠ Pastillero no detectado"}
         </Text>
 
         <TouchableOpacity
@@ -223,27 +272,30 @@ export default function Index() {
           {buscando ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.textoBoton}>🔍 Buscar Pastillero</Text>
+            <Text style={styles.textoBoton}>🔍 Buscar Pastillero (mDNS / Subred)</Text>
           )}
         </TouchableOpacity>
 
         {ipEsp !== "" && (
           <TouchableOpacity
-            style={[styles.botonBuscar, { backgroundColor: "#2196F3", marginTop: 8 }]}
+            style={[
+              styles.botonBuscar,
+              { backgroundColor: "#2196F3", marginTop: 8 },
+            ]}
             onPress={probarConexion}
             disabled={cargando}
           >
-            <Text style={styles.textoBoton}>🔌 Probar Comunicación LCD</Text>
+            <Text style={styles.textoBoton}>🔌 Probar Comunicación</Text>
           </TouchableOpacity>
         )}
       </View>
 
       {/* FORMULARIO */}
       <View style={styles.formulario}>
-        <Text style={styles.etiqueta}>Nombre / Medicamento</Text>
+        <Text style={styles.etiqueta}>Medicamento</Text>
         <TextInput
           style={styles.input}
-          placeholder="Ej: Ibuprofeno"
+          placeholder="Ej: Paracetamol"
           value={tipo}
           onChangeText={setTipo}
         />
@@ -254,7 +306,7 @@ export default function Index() {
           placeholder="17:30"
           value={hora}
           onChangeText={setHora}
-          keyboardType="numbers-and-punctuation"
+          keyboardType="default" // Usa teclado normal alfanumérico
           maxLength={5}
         />
 
@@ -268,7 +320,12 @@ export default function Index() {
                 style={[styles.dia, seleccionado && styles.diaSeleccionado]}
                 onPress={() => seleccionarDia(dia)}
               >
-                <Text style={[styles.textoDia, seleccionado && styles.textoDiaSeleccionado]}>
+                <Text
+                  style={[
+                    styles.textoDia,
+                    seleccionado && styles.textoDiaSeleccionado,
+                  ]}
+                >
                   {dia}
                 </Text>
               </TouchableOpacity>
@@ -285,8 +342,8 @@ export default function Index() {
         </TouchableOpacity>
       </View>
 
-      {/* LISTA INFERIOR DE MEDICAMENTOS */}
-      <Text style={styles.tituloLista}>Pastillas Programadas</Text>
+      {/* LISTA DE MEDICAMENTOS */}
+      <Text style={styles.tituloLista}>Horarios Programados</Text>
 
       {medicamentos.length === 0 ? (
         <View style={styles.sinMedicamentos}>
@@ -298,7 +355,9 @@ export default function Index() {
             <View style={styles.informacion}>
               <Text style={styles.tipoMedicamento}>{item.tipo}</Text>
               <Text style={styles.horaMedicamento}>🕐 {item.hora} hs</Text>
-              <Text style={styles.diasMedicamento}>📅 {item.dias.join(", ")}</Text>
+              <Text style={styles.diasMedicamento}>
+                📅 {item.dias.join(", ")}
+              </Text>
             </View>
 
             <TouchableOpacity
@@ -317,30 +376,112 @@ export default function Index() {
 const styles = StyleSheet.create({
   pantalla: { flex: 1, backgroundColor: "#f0f2f5" },
   contenedor: { padding: 20, paddingTop: 50, paddingBottom: 40 },
-  titulo: { fontSize: 26, fontWeight: "bold", textAlign: "center", color: "#1a1a1a" },
-  subtitulo: { fontSize: 14, color: "#666", textAlign: "center", marginBottom: 20 },
-  configIpContainer: { backgroundColor: "#e3f2fd", padding: 15, borderRadius: 12, marginBottom: 20 },
-  textoEstado: { fontSize: 15, fontWeight: "bold", color: "#2e7d32", marginBottom: 10 },
-  botonBuscar: { backgroundColor: "#673AB7", padding: 12, borderRadius: 8, alignItems: "center" },
-  formulario: { backgroundColor: "white", padding: 18, borderRadius: 14, marginBottom: 20 },
-  etiqueta: { fontSize: 14, fontWeight: "600", color: "#333", marginBottom: 6, marginTop: 6 },
-  input: { borderWidth: 1, borderColor: "#ddd", borderRadius: 8, padding: 10, fontSize: 15, backgroundColor: "#fff" },
-  diasContainer: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
-  dia: { borderWidth: 1, borderColor: "#ccc", borderRadius: 8, paddingVertical: 8, paddingHorizontal: 10, backgroundColor: "#fff" },
+  titulo: {
+    fontSize: 26,
+    fontWeight: "bold",
+    textAlign: "center",
+    color: "#1a1a1a",
+  },
+  subtitulo: {
+    fontSize: 14,
+    color: "#666",
+    textAlign: "center",
+    marginBottom: 20,
+  },
+  configIpContainer: {
+    backgroundColor: "#e3f2fd",
+    padding: 15,
+    borderRadius: 12,
+    marginBottom: 20,
+  },
+  textoEstado: {
+    fontSize: 15,
+    fontWeight: "bold",
+    color: "#2e7d32",
+    marginBottom: 10,
+  },
+  botonBuscar: {
+    backgroundColor: "#673AB7",
+    padding: 12,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  formulario: {
+    backgroundColor: "white",
+    padding: 18,
+    borderRadius: 14,
+    marginBottom: 20,
+  },
+  etiqueta: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333",
+    marginBottom: 6,
+    marginTop: 6,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    padding: 10,
+    fontSize: 15,
+    backgroundColor: "#fff",
+  },
+  diasContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 6,
+  },
+  dia: {
+    borderWidth: 1,
+    borderColor: "#ccc",
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    backgroundColor: "#fff",
+  },
   diaSeleccionado: { backgroundColor: "#2196F3", borderColor: "#2196F3" },
   textoDia: { fontWeight: "600", color: "#555", fontSize: 12 },
   textoDiaSeleccionado: { color: "white" },
-  botonAgregar: { backgroundColor: "#4CAF50", padding: 14, borderRadius: 10, marginTop: 18 },
+  botonAgregar: {
+    backgroundColor: "#4CAF50",
+    padding: 14,
+    borderRadius: 10,
+    marginTop: 18,
+  },
   botonDeshabilitado: { opacity: 0.6 },
-  textoBoton: { color: "white", textAlign: "center", fontSize: 15, fontWeight: "bold" },
-  tituloLista: { fontSize: 20, fontWeight: "bold", marginBottom: 12, color: "#333" },
+  textoBoton: {
+    color: "white",
+    textAlign: "center",
+    fontSize: 15,
+    fontWeight: "bold",
+  },
+  tituloLista: {
+    fontSize: 20,
+    fontWeight: "bold",
+    marginBottom: 12,
+    color: "#333",
+  },
   sinMedicamentos: { backgroundColor: "white", padding: 16, borderRadius: 10 },
   textoVacio: { color: "#888", textAlign: "center" },
-  fila: { backgroundColor: "white", borderRadius: 10, padding: 14, marginBottom: 10, flexDirection: "row", alignItems: "center" },
+  fila: {
+    backgroundColor: "white",
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 10,
+    flexDirection: "row",
+    alignItems: "center",
+  },
   informacion: { flex: 1 },
   tipoMedicamento: { fontSize: 16, fontWeight: "bold", color: "#222" },
   horaMedicamento: { fontSize: 14, color: "#444", marginTop: 2 },
   diasMedicamento: { fontSize: 12, color: "#777", marginTop: 2 },
-  botonEliminar: { backgroundColor: "#ef5350", paddingVertical: 8, paddingHorizontal: 10, borderRadius: 6 },
+  botonEliminar: {
+    backgroundColor: "#ef5350",
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+  },
   textoEliminar: { color: "white", fontSize: 12, fontWeight: "bold" },
 });
