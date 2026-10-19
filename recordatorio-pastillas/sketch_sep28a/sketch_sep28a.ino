@@ -34,7 +34,7 @@ const int PIN_IN2    = 17;
 const int PIN_IN3    = 18;
 const int PIN_IN4    = 19;
 
-// --- MOTOR PASO A PASO (28BYJ-48) ---
+// --- MOTOR PASO A PASO (28BYJ-48 + ULN2003) ---
 const int PASOS_POR_VUELTA         = 4096;
 const int CANTIDAD_COMPARTIMIENTOS  = 8;
 const int PASOS_POR_COMPARTIMIENTO = PASOS_POR_VUELTA / CANTIDAD_COMPARTIMIENTOS;
@@ -44,7 +44,7 @@ String ipLocal           = "";
 unsigned long ultimoChequeo = 0;
 const unsigned long INTERVALO_CHEQUEO_MS = 1000;
 
-// NTP
+// NTP (Sincronización de Hora por Internet)
 const char* ntpServer          = "pool.ntp.org";
 const long  gmtOffset_sec      = -10800; // GMT-3 (Argentina / Brasil / Uruguay)
 const int   daylightOffset_sec = 0;
@@ -94,7 +94,7 @@ void cargarAlarmasDesdeNVS() {
   }
 }
 
-// --- PANTALLA LCD ---
+// --- PANTALLA LCD 16x2 ---
 void mostrarMensaje(String linea1, String linea2 = "") {
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -108,6 +108,7 @@ void ajustarHoraSistema(time_t epochTime) {
   tv.tv_sec = epochTime;
   tv.tv_usec = 0;
   settimeofday(&tv, NULL);
+  Serial.println("Hora del sistema ajustada correctamente vía Unix Epoch.");
 }
 
 bool obtenerHoraActual(struct tm &timeinfo) {
@@ -117,20 +118,17 @@ bool obtenerHoraActual(struct tm &timeinfo) {
 void mostrarHoraActual() {
   struct tm timeinfo;
   if (obtenerHoraActual(timeinfo)) {
-    // Fila 0: Hora actual (ej: "Hora: 17:30:05  ") -> 16 caracteres exactos
     char bufHora[17];
     snprintf(bufHora, sizeof(bufHora), "Hora: %02d:%02d:%02d   ",
              timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
     lcd.setCursor(0, 0);
     lcd.print(bufHora);
 
-    // Fila 1: Total de alarmas (ej: "Alarmas: 2 act. ") -> 16 caracteres exactos
     char bufAlarma[17];
     snprintf(bufAlarma, sizeof(bufAlarma), "Alarmas: %-2d act.", totalAlarmas);
     lcd.setCursor(0, 1);
     lcd.print(bufAlarma);
   } else {
-    // Si no hay hora sincronizada, mostramos IP y alarmas rellenando a 16 espacios
     char bufIP[17];
     snprintf(bufIP, sizeof(bufIP), "IP:%-13s", ipLocal.substring(0, 13).c_str());
     lcd.setCursor(0, 0);
@@ -143,7 +141,7 @@ void mostrarHoraActual() {
   }
 }
 
-// --- ACTUADORES ---
+// --- HARDWARE: ACTUADORES ---
 void activarBuzzer() {
   for (int i = 0; i < 4; i++) {
     digitalWrite(PIN_BUZZER, HIGH);
@@ -167,6 +165,7 @@ void pasoMotor(int pasoActual) {
 }
 
 void girarUnaCelda() {
+  Serial.println("Girando motor 1 posicion (512 pasos)...");
   for (int paso = 0; paso < PASOS_POR_COMPARTIMIENTO; paso++) {
     pasoMotor(paso);
     delayMicroseconds(1500);
@@ -175,6 +174,7 @@ void girarUnaCelda() {
   digitalWrite(PIN_IN2, LOW);
   digitalWrite(PIN_IN3, LOW);
   digitalWrite(PIN_IN4, LOW);
+
   compartimientoActual = (compartimientoActual + 1) % CANTIDAD_COMPARTIMIENTOS;
 }
 
@@ -192,6 +192,7 @@ void revisarHorarios() {
   for (int i = 0; i < totalAlarmas; i++) {
     if (timeinfo.tm_hour == listaAlarmas[i].hora && timeinfo.tm_min == listaAlarmas[i].minuto) {
       if (!listaAlarmas[i].disparadoHoy) {
+        Serial.println(">>> ¡ALARMA ALCANZADA! DISPENSANDO <<<");
         dispensarPastilla(listaAlarmas[i].tipo);
         listaAlarmas[i].disparadoHoy = true;
       }
@@ -201,7 +202,7 @@ void revisarHorarios() {
   }
 }
 
-// --- SERVIDOR HTTP CON RESPUESTAS CORS ---
+// --- SERVIDOR WEBSERVER Y CABECERAS CORS ---
 void enviarHeadersCORS() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.sendHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS, DELETE");
@@ -224,7 +225,7 @@ void handleConectar() {
   IPAddress clientIP = server.client().remoteIP();
   mostrarMensaje("App Conectada!", clientIP.toString());
   delay(1200);
-  server.send(200, "application/json", "{\"status\":\"ok\"}");
+  server.send(200, "application/json", "{\"status\":\"ok\",\"mensaje\":\"Conexion exitosa con ESP32\"}");
 }
 
 void handleGetAlarmas() {
@@ -267,7 +268,9 @@ void handleSetHorario() {
 
   if (doc.containsKey("epoch")) {
     time_t epochActual = doc["epoch"];
-    if (epochActual > 100000) ajustarHoraSistema(epochActual);
+    if (epochActual > 100000) {
+      ajustarHoraSistema(epochActual);
+    }
   }
 
   if (totalAlarmas < MAX_ALARMAS) {
@@ -291,7 +294,6 @@ void handleSetHorario() {
   }
 }
 
-// --- NUEVO ENDPOINT PARA BORRAR ALARMARS ---
 void handleBorrarAlarma() {
   enviarHeadersCORS();
   if (!server.hasArg("plain")) {
@@ -341,7 +343,7 @@ void handleBorrarAlarma() {
 void handleDispensar() {
   enviarHeadersCORS();
   dispensarPastilla("Manual");
-  server.send(200, "application/json", "{\"status\":\"ok\"}");
+  server.send(200, "application/json", "{\"status\":\"ok\",\"accion\":\"dispensado\"}");
 }
 
 void iniciarServidorHTTP() {
@@ -365,8 +367,10 @@ void iniciarServidorHTTP() {
   server.on("/dispensar", HTTP_POST, handleDispensar);
 
   server.begin();
+  Serial.println("Servidor HTTP activo.");
 }
 
+// --- SETUP PRINCIPAL ---
 void setup() {
   Serial.begin(115200);
 
@@ -389,32 +393,49 @@ void setup() {
 
   cargarAlarmasDesdeNVS();
 
+  // --- WIFIMANAGER ---
   WiFiManager wm;
+  mostrarMensaje("Conectando WiFi...", "o AP: Pastillero");
+
+  // OBLIGAR A PEDIR SIEMPRE CONEXIÓN AL ENCENDER
+  wm.resetSettings();
+
   wm.setConfigPortalTimeout(120);
 
   if (!wm.autoConnect("Pastillero")) {
+    Serial.println("Tiempo de portal agotado. Reiniciando...");
+    mostrarMensaje("Sin Conexion", "Reiniciando...");
+    delay(2000);
     ESP.restart();
   }
 
   ipLocal = WiFi.localIP().toString();
+  Serial.print("Conectado con éxito a la red! IP: ");
+  Serial.println(ipLocal);
   mostrarMensaje("WiFi Conectado!", ipLocal);
   delay(1200);
 
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
+  // --- ESPmDNS ---
   if (MDNS.begin("pastillero")) {
     MDNS.addService("http", "tcp", 80);
+    Serial.println("Servicio mDNS activo en http://pastillero.local");
+  } else {
+    Serial.println("Error iniciando mDNS");
   }
 
   iniciarServidorHTTP();
 }
 
+// --- LOOP PRINCIPAL ---
 void loop() {
   server.handleClient();
 
   unsigned long ahora = millis();
   if (ahora - ultimoChequeo >= INTERVALO_CHEQUEO_MS) {
     ultimoChequeo = ahora;
+
     mostrarHoraActual();
     revisarHorarios();
   }
