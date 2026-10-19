@@ -28,8 +28,8 @@ export default function Index() {
   const [buscando, setBuscando] = useState(false);
   const [cargando, setCargando] = useState(false);
   const [medicamentos, setMedicamentos] = useState<Medicamento[]>([]);
+  const [mostrarManual, setMostrarManual] = useState(true);
 
-  // Función auxiliar para peticiones HTTP con tiempo de espera máximo
   const peticionConTimeout = async (
     url: string,
     opciones: RequestInit,
@@ -51,11 +51,31 @@ export default function Index() {
     }
   };
 
-  // Función para escanear y encontrar la ESP32 en la red doméstica
+  const cargarAlarmasDesdeESP32 = async (ip: string) => {
+    try {
+      const res = await peticionConTimeout(`http://${ip}/alarmas`, { method: "GET" }, 2000);
+      if (res.ok) {
+        const data = await res.json();
+        const alarmasCargadas: Medicamento[] = data.map((item: any) => {
+          const hStr = item.hora < 10 ? `0${item.hora}` : `${item.hora}`;
+          const mStr = item.minuto < 10 ? `0${item.minuto}` : `${item.minuto}`;
+          return {
+            id: item.id || Date.now(),
+            tipo: item.tipo,
+            hora: `${hStr}:${mStr}`,
+            dias: ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"],
+          };
+        });
+        setMedicamentos(alarmasCargadas);
+      }
+    } catch (e) {
+      console.log("No se pudieron consultar las alarmas guardadas.");
+    }
+  };
+
   const buscarPastilleroEnRed = async () => {
     setBuscando(true);
 
-    // 1. Intentar por mDNS (pastillero.local) y por IP de AP directo
     const destinosDirectos = ["pastillero.local", "192.168.4.1"];
     for (const host of destinosDirectos) {
       try {
@@ -70,6 +90,7 @@ export default function Index() {
             const ipFinal = data.ip || host;
             setIpEsp(ipFinal);
             Alert.alert("¡Encontrado!", `Conectado a la ESP32 en ${host}`);
+            cargarAlarmasDesdeESP32(ipFinal);
             setBuscando(false);
             return;
           }
@@ -77,7 +98,6 @@ export default function Index() {
       } catch (e) {}
     }
 
-    // 2. Escaneo de la subred local por lotes (Chunks de 15 IPs simultáneas)
     const subredes = ["192.168.1.", "192.168.0."];
     let encontrado = false;
 
@@ -112,7 +132,8 @@ export default function Index() {
         const ipEncontrada = resultados.find((ip) => ip !== null);
         if (ipEncontrada) {
           setIpEsp(ipEncontrada);
-          Alert.alert("¡Encontrado!", `Pastillero detectado en la IP ${ipEncontrada}`);
+          Alert.alert("¡Encontrado!", `Pastillero detectado en ${ipEncontrada}`);
+          cargarAlarmasDesdeESP32(ipEncontrada);
           encontrado = true;
           break;
         }
@@ -122,7 +143,7 @@ export default function Index() {
     if (!encontrado) {
       Alert.alert(
         "No encontrado",
-        "Asegúrate de que el celular esté conectado a la misma red Wi-Fi de la ESP32."
+        "Asegúrate de que el celular y la ESP32 compartan la misma red Wi-Fi."
       );
     }
 
@@ -137,13 +158,11 @@ export default function Index() {
         method: "POST",
       });
       if (res.ok) {
-        Alert.alert(
-          "¡Conectado!",
-          "Comunicación exitosa confirmada por la ESP32."
-        );
+        Alert.alert("¡Conectado!", "Comunicación confirmada con la ESP32.");
+        cargarAlarmasDesdeESP32(ipEsp);
       }
     } catch (e) {
-      Alert.alert("Error", "No se pudo establecer comunicación con el pastillero.");
+      Alert.alert("Error", "No se pudo comunicar con el pastillero.");
     } finally {
       setCargando(false);
     }
@@ -158,6 +177,7 @@ export default function Index() {
   };
 
   const enviarHorarioAESP32 = async (
+    idAlarma: number,
     nombreMed: string,
     horaNum: number,
     minutoNum: number,
@@ -166,7 +186,7 @@ export default function Index() {
     if (!ipEsp) {
       Alert.alert(
         "Guardado local",
-        "Horario guardado en la app. Recuerda vincular la ESP32 para sincronizar la alarma física."
+        "Horario guardado en la app. Vincula la ESP32 para sincronizar."
       );
       return;
     }
@@ -179,11 +199,11 @@ export default function Index() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          id: idAlarma,
           tipo: nombreMed,
           hora: horaNum,
           minuto: minutoNum,
           dias: diasArray,
-          mensaje: `Hora de tomar ${nombreMed}`,
           epoch: Math.floor(ahora.getTime() / 1000),
         }),
       });
@@ -191,15 +211,37 @@ export default function Index() {
       if (response.ok) {
         Alert.alert(
           "¡Alarma Enviada!",
-          `Se programó ${nombreMed} para las ${horaNum}:${
+          `Se guardó ${nombreMed} a las ${horaNum}:${
             minutoNum < 10 ? "0" : ""
           }${minutoNum} hs.`
         );
       }
     } catch (error) {
-      Alert.alert("Error de transmisión", "No se pudo enviar la alarma a la ESP32.");
+      Alert.alert("Error de envío", "No se pudo transmitir la alarma a la ESP32.");
     } finally {
       setCargando(false);
+    }
+  };
+
+  const eliminarMedicamentoEnESP32 = async (med: Medicamento) => {
+    if (!ipEsp) return;
+
+    const partes = med.hora.split(":");
+    const hNum = parseInt(partes[0], 10);
+    const mNum = parseInt(partes[1], 10);
+
+    try {
+      await peticionConTimeout(`http://${ipEsp}/borrar`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: med.id,
+          hora: hNum,
+          minuto: mNum,
+        }),
+      });
+    } catch (e) {
+      console.log("No se pudo eliminar la alarma en la ESP32:", e);
     }
   };
 
@@ -211,7 +253,7 @@ export default function Index() {
 
     const partesHora = hora.split(":");
     if (partesHora.length !== 2) {
-      Alert.alert("Formato incorrecto", "Escribe la hora con formato HH:MM (ejemplo: 17:30)");
+      Alert.alert("Formato incorrecto", "Usa el formato HH:MM (ejemplo: 17:30)");
       return;
     }
 
@@ -230,15 +272,16 @@ export default function Index() {
       return;
     }
 
+    const nuevoId = Date.now();
     const nuevoMedicamento: Medicamento = {
-      id: Date.now(),
+      id: nuevoId,
       tipo: tipo.trim(),
       hora: hora.trim(),
       dias: diasSeleccionados,
     };
 
     setMedicamentos([...medicamentos, nuevoMedicamento]);
-    enviarHorarioAESP32(tipo.trim(), horaNum, minutoNum, diasSeleccionados);
+    enviarHorarioAESP32(nuevoId, tipo.trim(), horaNum, minutoNum, diasSeleccionados);
 
     setTipo("");
     setHora("");
@@ -246,6 +289,10 @@ export default function Index() {
   };
 
   const eliminarMedicamento = (id: number) => {
+    const medAEliminar = medicamentos.find((m) => m.id === id);
+    if (medAEliminar) {
+      eliminarMedicamentoEnESP32(medAEliminar);
+    }
     setMedicamentos(medicamentos.filter((m) => m.id !== id));
   };
 
@@ -257,7 +304,42 @@ export default function Index() {
       <Text style={styles.titulo}>💊 Control de Pastillero</Text>
       <Text style={styles.subtitulo}>Asistente Automatizado de Medicación</Text>
 
-      {/* SECCIÓN DE VINCULACIÓN */}
+      {/* MANUAL DE USUARIO / INSTRUCCIONES DE CARGA */}
+      <View style={styles.manualContainer}>
+        <TouchableOpacity
+          style={styles.manualHeader}
+          onPress={() => setMostrarManual(!mostrarManual)}
+        >
+          <Text style={styles.manualTitulo}>📖 Guía de Carga Física</Text>
+          <Text style={styles.manualToggleText}>
+            {mostrarManual ? "Ocultar ▲" : "Ver guía ▼"}
+          </Text>
+        </TouchableOpacity>
+
+        {mostrarManual && (
+          <View style={styles.manualCuerpo}>
+            <View style={styles.alertaCompartimento}>
+              <Text style={styles.alertaIcono}>⚠️</Text>
+              <Text style={styles.alertaTexto}>
+                <Text style={{ fontWeight: "bold" }}>IMPORTANTE:</Text> El compartimento marcado con el número{" "}
+                <Text style={{ fontWeight: "bold", color: "#d32f2f" }}>1 DEBE QUEDAR VACÍO</Text>. Es la posición inicial de caída del motor.
+              </Text>
+            </View>
+
+            <Text style={styles.pasoTexto}>
+              1. Coloca hasta <Text style={{ fontWeight: "bold" }}>7 pastillas</Text> en total.
+            </Text>
+            <Text style={styles.pasoTexto}>
+              2. Llena únicamente los compartimentos ordenados del <Text style={{ fontWeight: "bold" }}>2 al 8</Text>.
+            </Text>
+            <Text style={styles.pasoTexto}>
+              3. Al sonar la alarma, el disco girará desde la casilla 1 para entregar la dosis correspondiente.
+            </Text>
+          </View>
+        )}
+      </View>
+
+      {/* CONEXIÓN */}
       <View style={styles.configIpContainer}>
         <Text style={styles.etiqueta}>Estado del Dispositivo</Text>
         <Text style={styles.textoEstado}>
@@ -272,7 +354,7 @@ export default function Index() {
           {buscando ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.textoBoton}>🔍 Buscar Pastillero (mDNS / Subred)</Text>
+            <Text style={styles.textoBoton}>🔍 Buscar Pastillero (mDNS/Subred)</Text>
           )}
         </TouchableOpacity>
 
@@ -285,7 +367,7 @@ export default function Index() {
             onPress={probarConexion}
             disabled={cargando}
           >
-            <Text style={styles.textoBoton}>🔌 Probar Comunicación</Text>
+            <Text style={styles.textoBoton}>🔌 Probar Comunicación / Sincronizar</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -306,7 +388,7 @@ export default function Index() {
           placeholder="17:30"
           value={hora}
           onChangeText={setHora}
-          keyboardType="default" // Usa teclado normal alfanumérico
+          keyboardType="default"
           maxLength={5}
         />
 
@@ -342,7 +424,7 @@ export default function Index() {
         </TouchableOpacity>
       </View>
 
-      {/* LISTA DE MEDICAMENTOS */}
+      {/* LISTA DE ALARMAS */}
       <Text style={styles.tituloLista}>Horarios Programados</Text>
 
       {medicamentos.length === 0 ? (
@@ -386,7 +468,60 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#666",
     textAlign: "center",
+    marginBottom: 15,
+  },
+  manualContainer: {
+    backgroundColor: "#fff3cd",
+    borderColor: "#ffeeba",
+    borderWidth: 1,
+    borderRadius: 12,
     marginBottom: 20,
+    overflow: "hidden",
+  },
+  manualHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: 14,
+    backgroundColor: "#ffe8a1",
+  },
+  manualTitulo: {
+    fontSize: 15,
+    fontWeight: "bold",
+    color: "#856404",
+  },
+  manualToggleText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#856404",
+  },
+  manualCuerpo: {
+    padding: 14,
+  },
+  alertaCompartimento: {
+    flexDirection: "row",
+    backgroundColor: "#fff",
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 10,
+    alignItems: "center",
+    borderColor: "#f5c6cb",
+    borderWidth: 1,
+  },
+  alertaIcono: {
+    fontSize: 18,
+    marginRight: 8,
+  },
+  alertaTexto: {
+    fontSize: 13,
+    color: "#721c24",
+    flex: 1,
+  },
+  pasoTexto: {
+    fontSize: 13,
+    color: "#555",
+    marginBottom: 4,
+    lineHeight: 18,
   },
   configIpContainer: {
     backgroundColor: "#e3f2fd",

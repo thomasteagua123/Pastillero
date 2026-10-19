@@ -9,6 +9,19 @@
 #include "time.h"
 #include <sys/time.h>
 
+// --- ESTRUCTURA DE ALARMA ---
+struct Alarma {
+  long id;
+  int hora;
+  int minuto;
+  String tipo;
+  bool disparadoHoy;
+};
+
+#define MAX_ALARMAS 10
+Alarma listaAlarmas[MAX_ALARMAS];
+int totalAlarmas = 0;
+
 // --- DECLARACIÓN DE PERIFÉRICOS ---
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 WebServer server(80);
@@ -21,55 +34,67 @@ const int PIN_IN2    = 17;
 const int PIN_IN3    = 18;
 const int PIN_IN4    = 19;
 
-// --- MOTOR PASO A PASO (28BYJ-48 + ULN2003) ---
-const int PASOS_POR_VUELTA        = 4096;
-const int CANTIDAD_COMPARTIMIENTOS = 8;
+// --- MOTOR PASO A PASO (28BYJ-48) ---
+const int PASOS_POR_VUELTA         = 4096;
+const int CANTIDAD_COMPARTIMIENTOS  = 8;
 const int PASOS_POR_COMPARTIMIENTO = PASOS_POR_VUELTA / CANTIDAD_COMPARTIMIENTOS;
 
-// --- MEMORIA NVS (PREFERENCES) ---
-const char* NVS_NAMESPACE = "horario_cfg";
-const char* NVS_KEY_HORA  = "hora";
-const char* NVS_KEY_MIN   = "minuto";
-const char* NVS_KEY_TIPO  = "tipo";
-
-// --- VARIABLES GLOBALES DE ESTADO ---
-int horaDispensar        = 17;
-int minutoDispensar     = 16;
-String nombreMedicamento = "Medicamento";
-bool yaDisparado         = false;
 int compartimientoActual = 0;
 String ipLocal           = "";
-
 unsigned long ultimoChequeo = 0;
 const unsigned long INTERVALO_CHEQUEO_MS = 1000;
 
-// Servidor NTP para sincronizar hora por internet
+// NTP
 const char* ntpServer          = "pool.ntp.org";
 const long  gmtOffset_sec      = -10800; // GMT-3 (Argentina / Brasil / Uruguay)
 const int   daylightOffset_sec = 0;
 
-// --- GESTIÓN DE MEMORIA PERMANENTE ---
-void iniciarNVS() {
-  preferences.begin(NVS_NAMESPACE, false);
-}
+// --- MEMORIA PERMANENTE NVS (JSON) ---
+void guardarAlarmasEnNVS() {
+  preferences.begin("pastillero_cfg", false);
+  DynamicJsonDocument doc(2048);
+  JsonArray array = doc.to<JsonArray>();
 
-void guardarHorarioEnNVS(int hora, int minuto, String tipo) {
-  preferences.putInt(NVS_KEY_HORA, hora);
-  preferences.putInt(NVS_KEY_MIN, minuto);
-  preferences.putString(NVS_KEY_TIPO, tipo);
-}
-
-bool cargarHorarioDesdeNVS(int &horaOut, int &minutoOut, String &tipoOut) {
-  if (!preferences.isKey(NVS_KEY_HORA) || !preferences.isKey(NVS_KEY_MIN)) {
-    return false;
+  for (int i = 0; i < totalAlarmas; i++) {
+    JsonObject obj = array.createNestedObject();
+    obj["id"]     = listaAlarmas[i].id;
+    obj["hora"]   = listaAlarmas[i].hora;
+    obj["minuto"] = listaAlarmas[i].minuto;
+    obj["tipo"]   = listaAlarmas[i].tipo;
   }
-  horaOut   = preferences.getInt(NVS_KEY_HORA, horaDispensar);
-  minutoOut = preferences.getInt(NVS_KEY_MIN, minutoDispensar);
-  tipoOut   = preferences.getString(NVS_KEY_TIPO, nombreMedicamento);
-  return true;
+
+  String jsonString;
+  serializeJson(doc, jsonString);
+  preferences.putString("alarmas_json", jsonString);
+  preferences.end();
 }
 
-// --- PANTALLA LCD 16x2 ---
+void cargarAlarmasDesdeNVS() {
+  preferences.begin("pastillero_cfg", true);
+  String jsonString = preferences.getString("alarmas_json", "");
+  preferences.end();
+
+  if (jsonString.length() == 0) return;
+
+  DynamicJsonDocument doc(2048);
+  DeserializationError error = deserializeJson(doc, jsonString);
+  if (!error) {
+    JsonArray array = doc.as<JsonArray>();
+    totalAlarmas = 0;
+    for (JsonObject obj : array) {
+      if (totalAlarmas < MAX_ALARMAS) {
+        listaAlarmas[totalAlarmas].id           = obj["id"] | (long)millis();
+        listaAlarmas[totalAlarmas].hora         = obj["hora"];
+        listaAlarmas[totalAlarmas].minuto       = obj["minuto"];
+        listaAlarmas[totalAlarmas].tipo         = obj["tipo"].as<String>();
+        listaAlarmas[totalAlarmas].disparadoHoy = false;
+        totalAlarmas++;
+      }
+    }
+  }
+}
+
+// --- PANTALLA LCD ---
 void mostrarMensaje(String linea1, String linea2 = "") {
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -78,13 +103,11 @@ void mostrarMensaje(String linea1, String linea2 = "") {
   lcd.print(linea2.substring(0, 16));
 }
 
-// --- GESTIÓN DE HORA Y RELOJ ---
 void ajustarHoraSistema(time_t epochTime) {
   struct timeval tv;
   tv.tv_sec = epochTime;
   tv.tv_usec = 0;
   settimeofday(&tv, NULL);
-  Serial.println("Hora del sistema ajustada correctamente vía Unix Epoch.");
 }
 
 bool obtenerHoraActual(struct tm &timeinfo) {
@@ -94,27 +117,33 @@ bool obtenerHoraActual(struct tm &timeinfo) {
 void mostrarHoraActual() {
   struct tm timeinfo;
   if (obtenerHoraActual(timeinfo)) {
+    // Fila 0: Hora actual (ej: "Hora: 17:30:05  ") -> 16 caracteres exactos
     char bufHora[17];
-    snprintf(bufHora, sizeof(bufHora), "Hora: %02d:%02d:%02d",
+    snprintf(bufHora, sizeof(bufHora), "Hora: %02d:%02d:%02d   ",
              timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
     lcd.setCursor(0, 0);
     lcd.print(bufHora);
 
+    // Fila 1: Total de alarmas (ej: "Alarmas: 2 act. ") -> 16 caracteres exactos
     char bufAlarma[17];
-    snprintf(bufAlarma, sizeof(bufAlarma), "Alarma: %02d:%02d", horaDispensar, minutoDispensar);
+    snprintf(bufAlarma, sizeof(bufAlarma), "Alarmas: %-2d act.", totalAlarmas);
     lcd.setCursor(0, 1);
     lcd.print(bufAlarma);
   } else {
+    // Si no hay hora sincronizada, mostramos IP y alarmas rellenando a 16 espacios
+    char bufIP[17];
+    snprintf(bufIP, sizeof(bufIP), "IP:%-13s", ipLocal.substring(0, 13).c_str());
     lcd.setCursor(0, 0);
-    lcd.print("IP: " + ipLocal.substring(0, 12));
-    lcd.setCursor(0, 1);
+    lcd.print(bufIP);
+
     char bufAlarma[17];
-    snprintf(bufAlarma, sizeof(bufAlarma), "Alarma: %02d:%02d", horaDispensar, minutoDispensar);
+    snprintf(bufAlarma, sizeof(bufAlarma), "Alarmas: %-7d", totalAlarmas);
+    lcd.setCursor(0, 1);
     lcd.print(bufAlarma);
   }
 }
 
-// --- HARDWARE: ACTUADORES ---
+// --- ACTUADORES ---
 void activarBuzzer() {
   for (int i = 0; i < 4; i++) {
     digitalWrite(PIN_BUZZER, HIGH);
@@ -138,46 +167,44 @@ void pasoMotor(int pasoActual) {
 }
 
 void girarUnaCelda() {
-  Serial.println("Girando motor 1 posicion (512 pasos)...");
   for (int paso = 0; paso < PASOS_POR_COMPARTIMIENTO; paso++) {
     pasoMotor(paso);
     delayMicroseconds(1500);
   }
-  // Apagar bobinas para ahorrar energía y evitar sobrecalentamiento
   digitalWrite(PIN_IN1, LOW);
   digitalWrite(PIN_IN2, LOW);
   digitalWrite(PIN_IN3, LOW);
   digitalWrite(PIN_IN4, LOW);
-
   compartimientoActual = (compartimientoActual + 1) % CANTIDAD_COMPARTIMIENTOS;
 }
 
-void dispensarPastilla() {
-  mostrarMensaje("Hora de tomar:", nombreMedicamento);
+void dispensarPastilla(String medicamento) {
+  mostrarMensaje("Hora de tomar:", medicamento);
   activarBuzzer();
   girarUnaCelda();
   delay(2000);
 }
 
-void revisarHorario() {
+void revisarHorarios() {
   struct tm timeinfo;
   if (!obtenerHoraActual(timeinfo)) return;
 
-  if (timeinfo.tm_hour == horaDispensar && timeinfo.tm_min == minutoDispensar) {
-    if (!yaDisparado) {
-      Serial.println(">>> ¡ALARMA ALCANZADA! EJECUTANDO DISPENSER Y BUZZER <<<");
-      dispensarPastilla();
-      yaDisparado = true;
+  for (int i = 0; i < totalAlarmas; i++) {
+    if (timeinfo.tm_hour == listaAlarmas[i].hora && timeinfo.tm_min == listaAlarmas[i].minuto) {
+      if (!listaAlarmas[i].disparadoHoy) {
+        dispensarPastilla(listaAlarmas[i].tipo);
+        listaAlarmas[i].disparadoHoy = true;
+      }
+    } else {
+      listaAlarmas[i].disparadoHoy = false;
     }
-  } else {
-    yaDisparado = false;
   }
 }
 
-// --- SERVIDOR WEBSERVER Y RESPUESTAS CORS PARA REACT NATIVE ---
+// --- SERVIDOR HTTP CON RESPUESTAS CORS ---
 void enviarHeadersCORS() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
-  server.sendHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS, DELETE");
   server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
@@ -197,7 +224,25 @@ void handleConectar() {
   IPAddress clientIP = server.client().remoteIP();
   mostrarMensaje("App Conectada!", clientIP.toString());
   delay(1200);
-  server.send(200, "application/json", "{\"status\":\"ok\",\"mensaje\":\"Conexion exitosa con ESP32\"}");
+  server.send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+void handleGetAlarmas() {
+  enviarHeadersCORS();
+  DynamicJsonDocument doc(2048);
+  JsonArray array = doc.to<JsonArray>();
+
+  for (int i = 0; i < totalAlarmas; i++) {
+    JsonObject obj = array.createNestedObject();
+    obj["id"]     = listaAlarmas[i].id;
+    obj["hora"]   = listaAlarmas[i].hora;
+    obj["minuto"] = listaAlarmas[i].minuto;
+    obj["tipo"]   = listaAlarmas[i].tipo;
+  }
+
+  String jsonString;
+  serializeJson(doc, jsonString);
+  server.send(200, "application/json", jsonString);
 }
 
 void handleSetHorario() {
@@ -207,7 +252,7 @@ void handleSetHorario() {
     return;
   }
 
-  StaticJsonDocument<400> doc;
+  StaticJsonDocument<512> doc;
   DeserializationError error = deserializeJson(doc, server.arg("plain"));
 
   if (error) {
@@ -218,65 +263,85 @@ void handleSetHorario() {
   int hora = doc["hora"];
   int minuto = doc["minuto"];
   String tipo = doc["tipo"] | "Medicamento";
-
-  if (hora < 0 || hora > 23 || minuto < 0 || minuto > 59) {
-    server.send(400, "application/json", "{\"error\":\"Hora invalida\"}");
-    return;
-  }
+  long idAlarma = doc.containsKey("id") ? doc["id"].as<long>() : (long)millis();
 
   if (doc.containsKey("epoch")) {
     time_t epochActual = doc["epoch"];
-    if (epochActual > 100000) {
-      ajustarHoraSistema(epochActual);
-    }
+    if (epochActual > 100000) ajustarHoraSistema(epochActual);
   }
 
-  horaDispensar = hora;
-  minutoDispensar = minuto;
-  nombreMedicamento = tipo;
+  if (totalAlarmas < MAX_ALARMAS) {
+    listaAlarmas[totalAlarmas].id = idAlarma;
+    listaAlarmas[totalAlarmas].hora = hora;
+    listaAlarmas[totalAlarmas].minuto = minuto;
+    listaAlarmas[totalAlarmas].tipo = tipo;
+    listaAlarmas[totalAlarmas].disparadoHoy = false;
+    totalAlarmas++;
 
-  struct tm timeinfo;
-  if (obtenerHoraActual(timeinfo)) {
-    yaDisparado = (timeinfo.tm_hour == horaDispensar && timeinfo.tm_min == minutoDispensar);
+    guardarAlarmasEnNVS();
+
+    char buffer[17];
+    snprintf(buffer, sizeof(buffer), "%02d:%02d (%d total)", hora, minuto, totalAlarmas);
+    mostrarMensaje("Alarma Agregada", buffer);
+    delay(1200);
+
+    server.send(200, "application/json", "{\"status\":\"ok\",\"total\":" + String(totalAlarmas) + "}");
   } else {
-    yaDisparado = false;
+    server.send(400, "application/json", "{\"error\":\"Limite de alarmas alcanzado\"}");
   }
-
-  guardarHorarioEnNVS(horaDispensar, minutoDispensar, nombreMedicamento);
-
-  char buffer[17];
-  snprintf(buffer, sizeof(buffer), "Alarma: %02d:%02d", horaDispensar, minutoDispensar);
-  mostrarMensaje("Guardado OK!", buffer);
-  delay(1500);
-
-  server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
-void handleSyncTime() {
+// --- NUEVO ENDPOINT PARA BORRAR ALARMARS ---
+void handleBorrarAlarma() {
   enviarHeadersCORS();
   if (!server.hasArg("plain")) {
     server.send(400, "application/json", "{\"error\":\"body vacio\"}");
     return;
   }
 
-  StaticJsonDocument<200> doc;
+  StaticJsonDocument<256> doc;
   DeserializationError error = deserializeJson(doc, server.arg("plain"));
 
-  if (!error && doc.containsKey("epoch")) {
-    time_t epochActual = doc["epoch"];
-    if (epochActual > 100000) {
-      ajustarHoraSistema(epochActual);
-      server.send(200, "application/json", "{\"status\":\"ok\",\"mensaje\":\"Hora sincronizada\"}");
-      return;
+  if (error) {
+    server.send(400, "application/json", "{\"error\":\"JSON invalido\"}");
+    return;
+  }
+
+  long idBorrar = doc.containsKey("id") ? doc["id"].as<long>() : -1;
+  int horaBorrar = doc["hora"] | -1;
+  int minutoBorrar = doc["minuto"] | -1;
+
+  int indiceEncontrado = -1;
+
+  for (int i = 0; i < totalAlarmas; i++) {
+    if ((idBorrar != -1 && listaAlarmas[i].id == idBorrar) ||
+        (horaBorrar == listaAlarmas[i].hora && minutoBorrar == listaAlarmas[i].minuto)) {
+      indiceEncontrado = i;
+      break;
     }
   }
-  server.send(400, "application/json", "{\"error\":\"Epoch invalido\"}");
+
+  if (indiceEncontrado != -1) {
+    for (int i = indiceEncontrado; i < totalAlarmas - 1; i++) {
+      listaAlarmas[i] = listaAlarmas[i + 1];
+    }
+    totalAlarmas--;
+
+    guardarAlarmasEnNVS();
+
+    mostrarMensaje("Alarma Borrada", "Restantes: " + String(totalAlarmas));
+    delay(1200);
+
+    server.send(200, "application/json", "{\"status\":\"ok\",\"restantes\":" + String(totalAlarmas) + "}");
+  } else {
+    server.send(404, "application/json", "{\"error\":\"Alarma no encontrada\"}");
+  }
 }
 
 void handleDispensar() {
   enviarHeadersCORS();
-  dispensarPastilla();
-  server.send(200, "application/json", "{\"status\":\"ok\",\"accion\":\"dispensado\"}");
+  dispensarPastilla("Manual");
+  server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
 void iniciarServidorHTTP() {
@@ -285,22 +350,23 @@ void iniciarServidorHTTP() {
 
   server.on("/conectar", HTTP_OPTIONS, handleOptions);
   server.on("/conectar", HTTP_POST, handleConectar);
-  server.on("/conectar", HTTP_GET, handleConectar);
+
+  server.on("/alarmas", HTTP_OPTIONS, handleOptions);
+  server.on("/alarmas", HTTP_GET, handleGetAlarmas);
 
   server.on("/horario", HTTP_OPTIONS, handleOptions);
   server.on("/horario", HTTP_POST, handleSetHorario);
 
-  server.on("/synctime", HTTP_OPTIONS, handleOptions);
-  server.on("/synctime", HTTP_POST, handleSyncTime);
+  server.on("/borrar", HTTP_OPTIONS, handleOptions);
+  server.on("/borrar", HTTP_POST, handleBorrarAlarma);
+  server.on("/borrar", HTTP_DELETE, handleBorrarAlarma);
 
   server.on("/dispensar", HTTP_OPTIONS, handleOptions);
   server.on("/dispensar", HTTP_POST, handleDispensar);
 
   server.begin();
-  Serial.println("Servidor HTTP activo.");
 }
 
-// --- SETUP PRINCIPAL ---
 void setup() {
   Serial.begin(115200);
 
@@ -321,60 +387,35 @@ void setup() {
   lcd.backlight();
   mostrarMensaje("Iniciando...", "Pastillero ESP32");
 
-  iniciarNVS();
+  cargarAlarmasDesdeNVS();
 
-  int horaGuardada, minutoGuardado;
-  String tipoGuardado;
-  if (cargarHorarioDesdeNVS(horaGuardada, minutoGuardado, tipoGuardado)) {
-    horaDispensar     = horaGuardada;
-    minutoDispensar   = minutoGuardado;
-    nombreMedicamento = tipoGuardado;
-  }
-
-  // --- WIFIMANAGER ---
   WiFiManager wm;
-  mostrarMensaje("Conectando WiFi...", "o AP: Pastillero");
-
-  // Si no logra conectarse a una red conocida en 120 segundos, abre la red AP 'Pastillero'
   wm.setConfigPortalTimeout(120);
 
   if (!wm.autoConnect("Pastillero")) {
-    Serial.println("Tiempo de portal agotado. Reiniciando...");
-    mostrarMensaje("Sin Conexion", "Reiniciando...");
-    delay(2000);
     ESP.restart();
   }
 
-  // Conexión exitosa a la red doméstica
   ipLocal = WiFi.localIP().toString();
-  Serial.print("Conectado con éxito a la red! IP: ");
-  Serial.println(ipLocal);
   mostrarMensaje("WiFi Conectado!", ipLocal);
-  delay(1500);
+  delay(1200);
 
-  // Configurar hora vía NTP
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
-  // --- ESPmDNS ---
   if (MDNS.begin("pastillero")) {
     MDNS.addService("http", "tcp", 80);
-    Serial.println("Servicio mDNS activo en http://pastillero.local");
-  } else {
-    Serial.println("Error iniciando mDNS");
   }
 
   iniciarServidorHTTP();
 }
 
-// --- LOOP PRINCIPAL ---
 void loop() {
   server.handleClient();
 
   unsigned long ahora = millis();
   if (ahora - ultimoChequeo >= INTERVALO_CHEQUEO_MS) {
     ultimoChequeo = ahora;
-
     mostrarHoraActual();
-    revisarHorario();
+    revisarHorarios();
   }
 }
