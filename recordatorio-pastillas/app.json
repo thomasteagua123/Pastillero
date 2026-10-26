@@ -18,7 +18,8 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.thomasteagua123.recordatoriopastillas"
+      "package": "com.thomasteagua123.recordatoriopastillas",
+      "usesCleartextTraffic": true
     },
     "web": {
       "output": "static",
@@ -32,6 +33,14 @@
           "backgroundColor": "#208AEF",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
         }
       ]
     ],

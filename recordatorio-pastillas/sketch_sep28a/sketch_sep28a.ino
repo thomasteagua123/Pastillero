@@ -15,6 +15,7 @@ struct Alarma {
   int hora;
   int minuto;
   String tipo;
+  String estado; // "Pendiente" o "Tomada"
   bool disparadoHoy;
 };
 
@@ -61,6 +62,7 @@ void guardarAlarmasEnNVS() {
     obj["hora"]   = listaAlarmas[i].hora;
     obj["minuto"] = listaAlarmas[i].minuto;
     obj["tipo"]   = listaAlarmas[i].tipo;
+    obj["estado"] = listaAlarmas[i].estado;
   }
 
   String jsonString;
@@ -87,6 +89,10 @@ void cargarAlarmasDesdeNVS() {
         listaAlarmas[totalAlarmas].hora         = obj["hora"];
         listaAlarmas[totalAlarmas].minuto       = obj["minuto"];
         listaAlarmas[totalAlarmas].tipo         = obj["tipo"].as<String>();
+        
+        const char* estadoStr = obj["estado"];
+        listaAlarmas[totalAlarmas].estado       = estadoStr ? String(estadoStr) : "Pendiente";
+        
         listaAlarmas[totalAlarmas].disparadoHoy = false;
         totalAlarmas++;
       }
@@ -178,10 +184,15 @@ void girarUnaCelda() {
   compartimientoActual = (compartimientoActual + 1) % CANTIDAD_COMPARTIMIENTOS;
 }
 
-void dispensarPastilla(String medicamento) {
-  mostrarMensaje("Hora de tomar:", medicamento);
+void dispensarPastilla(int indiceAlarma) {
+  mostrarMensaje("Hora de tomar:", listaAlarmas[indiceAlarma].tipo);
   activarBuzzer();
   girarUnaCelda();
+  
+  // Al dispensar físicamente, cambiamos el estado a Tomada automáticamente
+  listaAlarmas[indiceAlarma].estado = "Tomada";
+  guardarAlarmasEnNVS();
+  
   delay(2000);
 }
 
@@ -193,7 +204,7 @@ void revisarHorarios() {
     if (timeinfo.tm_hour == listaAlarmas[i].hora && timeinfo.tm_min == listaAlarmas[i].minuto) {
       if (!listaAlarmas[i].disparadoHoy) {
         Serial.println(">>> ¡ALARMA ALCANZADA! DISPENSANDO <<<");
-        dispensarPastilla(listaAlarmas[i].tipo);
+        dispensarPastilla(i);
         listaAlarmas[i].disparadoHoy = true;
       }
     } else {
@@ -239,6 +250,7 @@ void handleGetAlarmas() {
     obj["hora"]   = listaAlarmas[i].hora;
     obj["minuto"] = listaAlarmas[i].minuto;
     obj["tipo"]   = listaAlarmas[i].tipo;
+    obj["estado"] = listaAlarmas[i].estado;
   }
 
   String jsonString;
@@ -278,6 +290,7 @@ void handleSetHorario() {
     listaAlarmas[totalAlarmas].hora = hora;
     listaAlarmas[totalAlarmas].minuto = minuto;
     listaAlarmas[totalAlarmas].tipo = tipo;
+    listaAlarmas[totalAlarmas].estado = "Pendiente";
     listaAlarmas[totalAlarmas].disparadoHoy = false;
     totalAlarmas++;
 
@@ -291,6 +304,41 @@ void handleSetHorario() {
     server.send(200, "application/json", "{\"status\":\"ok\",\"total\":" + String(totalAlarmas) + "}");
   } else {
     server.send(400, "application/json", "{\"error\":\"Limite de alarmas alcanzado\"}");
+  }
+}
+
+void handleActualizarEstado() {
+  enviarHeadersCORS();
+  if (!server.hasArg("plain")) {
+    server.send(400, "application/json", "{\"error\":\"body vacio\"}");
+    return;
+  }
+
+  StaticJsonDocument<256> doc;
+  DeserializationError error = deserializeJson(doc, server.arg("plain"));
+
+  if (error) {
+    server.send(400, "application/json", "{\"error\":\"JSON invalido\"}");
+    return;
+  }
+
+  long idAlarma = doc["id"] | 0;
+  String nuevoEstado = doc["estado"] | "Pendiente";
+
+  bool encontrado = false;
+  for (int i = 0; i < totalAlarmas; i++) {
+    if ((long)listaAlarmas[i].id == idAlarma) {
+      listaAlarmas[i].estado = nuevoEstado;
+      encontrado = true;
+      break;
+    }
+  }
+
+  if (encontrado) {
+    guardarAlarmasEnNVS();
+    server.send(200, "application/json", "{\"status\":\"ok\"}");
+  } else {
+    server.send(404, "application/json", "{\"error\":\"Alarma no encontrada\"}");
   }
 }
 
@@ -310,14 +358,10 @@ void handleBorrarAlarma() {
   }
 
   long idBorrar = doc.containsKey("id") ? doc["id"].as<long>() : -1;
-  int horaBorrar = doc["hora"] | -1;
-  int minutoBorrar = doc["minuto"] | -1;
-
   int indiceEncontrado = -1;
 
   for (int i = 0; i < totalAlarmas; i++) {
-    if ((idBorrar != -1 && listaAlarmas[i].id == idBorrar) ||
-        (horaBorrar == listaAlarmas[i].hora && minutoBorrar == listaAlarmas[i].minuto)) {
+    if (idBorrar != -1 && listaAlarmas[i].id == idBorrar) {
       indiceEncontrado = i;
       break;
     }
@@ -342,8 +386,13 @@ void handleBorrarAlarma() {
 
 void handleDispensar() {
   enviarHeadersCORS();
-  dispensarPastilla("Manual");
-  server.send(200, "application/json", "{\"status\":\"ok\",\"accion\":\"dispensado\"}");
+  // Busca la primera alarma o simula dispensado manual
+  if(totalAlarmas > 0) {
+    dispensarPastilla(0);
+  } else {
+    girarUnaCelda();
+  }
+  server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
 void iniciarServidorHTTP() {
@@ -359,6 +408,9 @@ void iniciarServidorHTTP() {
   server.on("/horario", HTTP_OPTIONS, handleOptions);
   server.on("/horario", HTTP_POST, handleSetHorario);
 
+  server.on("/estado", HTTP_OPTIONS, handleOptions);
+  server.on("/estado", HTTP_POST, handleActualizarEstado);
+
   server.on("/borrar", HTTP_OPTIONS, handleOptions);
   server.on("/borrar", HTTP_POST, handleBorrarAlarma);
   server.on("/borrar", HTTP_DELETE, handleBorrarAlarma);
@@ -370,7 +422,6 @@ void iniciarServidorHTTP() {
   Serial.println("Servidor HTTP activo.");
 }
 
-// --- SETUP PRINCIPAL ---
 void setup() {
   Serial.begin(115200);
 
@@ -393,13 +444,10 @@ void setup() {
 
   cargarAlarmasDesdeNVS();
 
-  // --- WIFIMANAGER ---
   WiFiManager wm;
   mostrarMensaje("Conectando WiFi...", "o AP: Pastillero");
 
-  // OBLIGAR A PEDIR SIEMPRE CONEXIÓN AL ENCENDER
-  wm.resetSettings();
-
+  wm.resetSettings(); 
   wm.setConfigPortalTimeout(120);
 
   if (!wm.autoConnect("Pastillero")) {
@@ -417,7 +465,6 @@ void setup() {
 
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
-  // --- ESPmDNS ---
   if (MDNS.begin("pastillero")) {
     MDNS.addService("http", "tcp", 80);
     Serial.println("Servicio mDNS activo en http://pastillero.local");
@@ -428,7 +475,6 @@ void setup() {
   iniciarServidorHTTP();
 }
 
-// --- LOOP PRINCIPAL ---
 void loop() {
   server.handleClient();
 
