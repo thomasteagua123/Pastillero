@@ -15,7 +15,7 @@ struct Alarma {
   int hora;
   int minuto;
   String tipo;
-  String estado; // "Pendiente" o "Tomada"
+  String estado; // "Pendiente", "Pastilla dispensada", "Tomada"
   bool disparadoHoy;
 };
 
@@ -44,6 +44,7 @@ int compartimientoActual = 0;
 String ipLocal           = "";
 unsigned long ultimoChequeo = 0;
 const unsigned long INTERVALO_CHEQUEO_MS = 1000;
+int ultimoDia = -1;
 
 // NTP (Sincronización de Hora por Internet)
 const char* ntpServer          = "pool.ntp.org";
@@ -151,9 +152,9 @@ void mostrarHoraActual() {
 void activarBuzzer() {
   for (int i = 0; i < 4; i++) {
     digitalWrite(PIN_BUZZER, HIGH);
-    delay(200);
-    digitalWrite(PIN_BUZZER, LOW);
     delay(150);
+    digitalWrite(PIN_BUZZER, LOW);
+    delay(100);
   }
 }
 
@@ -174,7 +175,7 @@ void girarUnaCelda() {
   Serial.println("Girando motor 1 posicion (512 pasos)...");
   for (int paso = 0; paso < PASOS_POR_COMPARTIMIENTO; paso++) {
     pasoMotor(paso);
-    delayMicroseconds(1500);
+    delayMicroseconds(1200);
   }
   digitalWrite(PIN_IN1, LOW);
   digitalWrite(PIN_IN2, LOW);
@@ -185,15 +186,29 @@ void girarUnaCelda() {
 }
 
 void dispensarPastilla(int indiceAlarma) {
-  mostrarMensaje("Hora de tomar:", listaAlarmas[indiceAlarma].tipo);
+  mostrarMensaje("Pastilla Lista!", listaAlarmas[indiceAlarma].tipo);
   activarBuzzer();
   girarUnaCelda();
   
-  // Al dispensar físicamente, cambiamos el estado a Tomada automáticamente
-  listaAlarmas[indiceAlarma].estado = "Tomada";
+  listaAlarmas[indiceAlarma].estado = "Pastilla dispensada";
   guardarAlarmasEnNVS();
   
-  delay(2000);
+  Serial.println("¡Pastilla dispensada correctamente!");
+}
+
+void verificarCambioDeDia() {
+  struct tm timeinfo;
+  if (!obtenerHoraActual(timeinfo)) return;
+
+  if (ultimoDia != -1 && ultimoDia != timeinfo.tm_mday) {
+    Serial.println(">>> NUEVO DÍA: Reseteando estados a Pendiente <<<");
+    for (int i = 0; i < totalAlarmas; i++) {
+      listaAlarmas[i].estado = "Pendiente";
+      listaAlarmas[i].disparadoHoy = false;
+    }
+    guardarAlarmasEnNVS();
+  }
+  ultimoDia = timeinfo.tm_mday;
 }
 
 void revisarHorarios() {
@@ -202,7 +217,7 @@ void revisarHorarios() {
 
   for (int i = 0; i < totalAlarmas; i++) {
     if (timeinfo.tm_hour == listaAlarmas[i].hora && timeinfo.tm_min == listaAlarmas[i].minuto) {
-      if (!listaAlarmas[i].disparadoHoy) {
+      if (!listaAlarmas[i].disparadoHoy && listaAlarmas[i].estado == "Pendiente") {
         Serial.println(">>> ¡ALARMA ALCANZADA! DISPENSANDO <<<");
         dispensarPastilla(i);
         listaAlarmas[i].disparadoHoy = true;
@@ -235,7 +250,7 @@ void handleConectar() {
   enviarHeadersCORS();
   IPAddress clientIP = server.client().remoteIP();
   mostrarMensaje("App Conectada!", clientIP.toString());
-  delay(1200);
+  delay(1000);
   server.send(200, "application/json", "{\"status\":\"ok\",\"mensaje\":\"Conexion exitosa con ESP32\"}");
 }
 
@@ -299,7 +314,7 @@ void handleSetHorario() {
     char buffer[17];
     snprintf(buffer, sizeof(buffer), "%02d:%02d (%d total)", hora, minuto, totalAlarmas);
     mostrarMensaje("Alarma Agregada", buffer);
-    delay(1200);
+    delay(1000);
 
     server.send(200, "application/json", "{\"status\":\"ok\",\"total\":" + String(totalAlarmas) + "}");
   } else {
@@ -376,7 +391,7 @@ void handleBorrarAlarma() {
     guardarAlarmasEnNVS();
 
     mostrarMensaje("Alarma Borrada", "Restantes: " + String(totalAlarmas));
-    delay(1200);
+    delay(1000);
 
     server.send(200, "application/json", "{\"status\":\"ok\",\"restantes\":" + String(totalAlarmas) + "}");
   } else {
@@ -386,7 +401,6 @@ void handleBorrarAlarma() {
 
 void handleDispensar() {
   enviarHeadersCORS();
-  // Busca la primera alarma o simula dispensado manual
   if(totalAlarmas > 0) {
     dispensarPastilla(0);
   } else {
@@ -483,6 +497,7 @@ void loop() {
     ultimoChequeo = ahora;
 
     mostrarHoraActual();
+    verificarCambioDeDia();
     revisarHorarios();
   }
 }

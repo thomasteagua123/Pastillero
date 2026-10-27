@@ -15,7 +15,7 @@ type Medicamento = {
   tipo: string;
   hora: string;
   dias: string[];
-  estado: "Pendiente" | "Tomada";
+  estado: "Pendiente" | "Pastilla dispensada" | "Tomada";
 };
 
 const diasSemana = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
@@ -24,6 +24,9 @@ export default function Index() {
   const [tipo, setTipo] = useState("");
   const [hora, setHora] = useState("");
   const [diasSeleccionados, setDiasSeleccionados] = useState<string[]>([]);
+  
+  const [modoSeleccionado, setModoSeleccionado] = useState<"diario" | "intervalo">("diario");
+  const [intervaloHoras, setIntervaloHoras] = useState("8");
 
   const [ipEsp, setIpEsp] = useState("");
   const [buscando, setBuscando] = useState(false);
@@ -70,7 +73,7 @@ export default function Index() {
               tipo: item.tipo || "Medicamento",
               hora: `${hStr}:${mStr}`,
               dias: ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"],
-              estado: item.estado === "Tomada" ? "Tomada" : "Pendiente",
+              estado: item.estado || "Pendiente",
             };
           });
           setMedicamentos(alarmasCargadas);
@@ -218,20 +221,42 @@ export default function Index() {
       return;
     }
 
-    const hNum = parseInt(partes[0], 10);
-    const mNum = parseInt(partes[1], 10);
+    const horaBase = parseInt(partes[0], 10);
+    const minutoBase = parseInt(partes[1], 10);
 
-    const nuevoId = Date.now();
-    const nuevoMedicamento: Medicamento = {
-      id: nuevoId,
-      tipo: tipo.trim(),
-      hora: hora.trim(),
-      dias: diasSeleccionados,
-      estado: "Pendiente",
-    };
+    if (modoSeleccionado === "intervalo") {
+      const saltoHoras = parseInt(intervaloHoras, 10) || 8;
+      
+      for (let i = 0; i < 7; i++) {
+        let horaCalculada = (horaBase + (i * saltoHoras)) % 24;
+        const nuevoId = Date.now() + i;
+        
+        const horaStr = `${horaCalculada < 10 ? "0" + horaCalculada : horaCalculada}:${minutoBase < 10 ? "0" + minutoBase : minutoBase}`;
+        
+        const nuevoMedicamento: Medicamento = {
+          id: nuevoId,
+          tipo: `${tipo.trim()} (Toma ${i + 1}/7)`,
+          hora: horaStr,
+          dias: diasSeleccionados,
+          estado: "Pendiente",
+        };
 
-    setMedicamentos((prev) => (Array.isArray(prev) ? [...prev, nuevoMedicamento] : [nuevoMedicamento]));
-    enviarHorarioAESP32(nuevoId, tipo.trim(), hNum, mNum, diasSeleccionados);
+        setMedicamentos((prev) => (Array.isArray(prev) ? [...prev, nuevoMedicamento] : [nuevoMedicamento]));
+        enviarHorarioAESP32(nuevoId, nuevoMedicamento.tipo, horaCalculada, minutoBase, diasSeleccionados);
+      }
+    } else {
+      const nuevoId = Date.now();
+      const nuevoMedicamento: Medicamento = {
+        id: nuevoId,
+        tipo: tipo.trim(),
+        hora: hora.trim(),
+        dias: diasSeleccionados,
+        estado: "Pendiente",
+      };
+
+      setMedicamentos((prev) => (Array.isArray(prev) ? [...prev, nuevoMedicamento] : [nuevoMedicamento]));
+      enviarHorarioAESP32(nuevoId, tipo.trim(), horaBase, minutoBase, diasSeleccionados);
+    }
 
     setTipo("");
     setHora("");
@@ -267,7 +292,7 @@ export default function Index() {
         {mostrarManual && (
           <View style={styles.manualCuerpo}>
             <Text style={styles.pasoTexto}>⚠️ Compartimento 1: VACÍO (Posición de inicio).</Text>
-            <Text style={styles.pasoTexto}>✅ Carga de pastillas del 2 al 8 (máximo 7).</Text>
+            <Text style={styles.pasoTexto}>✅ Carga de pastillas del 2 al 8 (máximo 7 compartimentos).</Text>
           </View>
         )}
       </View>
@@ -297,10 +322,44 @@ export default function Index() {
         <Text style={styles.etiqueta}>Medicamento</Text>
         <TextInput style={styles.input} placeholder="Ej: Paracetamol" value={tipo} onChangeText={setTipo} />
 
-        <Text style={styles.etiqueta}>Hora (HH:MM)</Text>
+        <Text style={styles.etiqueta}>Modo de Toma</Text>
+        <View style={styles.diasContainer}>
+          <TouchableOpacity
+            style={[styles.dia, modoSeleccionado === "diario" && styles.diaSeleccionado]}
+            onPress={() => setModoSeleccionado("diario")}
+          >
+            <Text style={[styles.textoDia, modoSeleccionado === "diario" && styles.textoDiaSeleccionado]}>
+              Diario (Específico)
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.dia, modoSeleccionado === "intervalo" && styles.diaSeleccionado]}
+            onPress={() => setModoSeleccionado("intervalo")}
+          >
+            <Text style={[styles.textoDia, modoSeleccionado === "intervalo" && styles.textoDiaSeleccionado]}>
+              Cada X Horas (7 tomas)
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {modoSeleccionado === "intervalo" && (
+          <>
+            <Text style={styles.etiqueta}>Repetir cada (Horas)</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Ej: 8"
+              value={intervaloHoras}
+              onChangeText={setIntervaloHoras}
+              keyboardType="numeric"
+            />
+          </>
+        )}
+
+        <Text style={styles.etiqueta}>Hora Inicial (HH:MM)</Text>
         <TextInput
           style={styles.input}
-          placeholder="17:30"
+          placeholder="12:30"
           value={hora}
           onChangeText={setHora}
           keyboardType="default"
@@ -337,8 +396,16 @@ export default function Index() {
         </View>
       ) : (
         medicamentos.map((item, index) => {
-          const esTomada = item?.estado === "Tomada";
-          const colorBadge = esTomada ? "#4CAF50" : "#ff9800"; // Verde si tomada, Naranja si pendiente
+          let colorBadge = "#ff9800"; // Naranja para Pendiente
+          let textoEstado = "⏳ Pendiente";
+
+          if (item?.estado === "Pastilla dispensada") {
+            colorBadge = "#0288D1"; // Azul cuando el motor gira y cae la pastilla
+            textoEstado = "💊 Pastilla dispensada";
+          } else if (item?.estado === "Tomada") {
+            colorBadge = "#4CAF50"; // Verde
+            textoEstado = "✓ Tomada";
+          }
 
           return (
             <View style={styles.fila} key={item?.id || index}>
@@ -348,9 +415,7 @@ export default function Index() {
                 <Text style={styles.diasMedicamento}>📅 {item?.dias?.join(", ") || "Todos los días"}</Text>
                 
                 <View style={[styles.badgeEstado, { backgroundColor: colorBadge }]}>
-                  <Text style={styles.textoBadge}>
-                    {esTomada ? "✓ Pastilla tomada" : "⏳ Pendiente"}
-                  </Text>
+                  <Text style={styles.textoBadge}>{textoEstado}</Text>
                 </View>
               </View>
 
