@@ -25,15 +25,20 @@ int totalAlarmas = 0;
 
 // --- DECLARACIÓN DE PERIFÉRICOS ---
 LiquidCrystal_I2C lcd(0x27, 16, 2);
-WebServer server(8080);
+WebServer server(80);
 Preferences preferences;
 
 // --- CONFIGURACIÓN DE PINES ---
 const int PIN_BUZZER = 13;
+const int PIN_BOTON  = 0; // GPIO 0 (Botón BOOT de la ESP32)
 const int PIN_IN1    = 16;
 const int PIN_IN2    = 17;
 const int PIN_IN3    = 18;
 const int PIN_IN4    = 19;
+
+// Variables para el Hard-Reset (Botón GPIO 0 por 5 segundos)
+unsigned long tiempoPresionado = 0;
+bool botonFuePresionado = false;
 
 // --- MOTOR PASO A PASO (28BYJ-48 + ULN2003) ---
 const int PASOS_POR_VUELTA         = 4096;
@@ -224,6 +229,49 @@ void revisarHorarios() {
       }
     } else {
       listaAlarmas[i].disparadoHoy = false;
+    }
+  }
+}
+
+// --- VERIFICACIÓN DE HARD-RESET (BOTÓN GPIO 0) ---
+void verificarHardReset() {
+  // El botón GPIO0 está en LOW cuando se presiona
+  if (digitalRead(PIN_BOTON) == LOW) {
+    if (!botonFuePresionado) {
+      botonFuePresionado = true;
+      tiempoPresionado = millis();
+      Serial.println("Botón presionado... Mantén 5s para Hard-Reset.");
+      mostrarMensaje("Boton Presionado", "Manten 5 segundos");
+    } else {
+      // Si pasaron 5 segundos (5000 ms) con el botón presionado
+      if (millis() - tiempoPresionado >= 5000) {
+        Serial.println("\n>>> ¡HARD-RESET ACTIVADO! Borrando datos... <<<");
+        mostrarMensaje("HARD-RESET", "Borrando datos...");
+        
+        // 1. Borrar credenciales de WiFi guardadas
+        WiFiManager wm;
+        wm.resetSettings();
+
+        // 2. Borrar alarmas y preferencias guardadas en NVS
+        preferences.begin("pastillero_cfg", false);
+        preferences.clear();
+        preferences.end();
+
+        // Sonido de confirmación
+        digitalWrite(PIN_BUZZER, HIGH);
+        delay(800);
+        digitalWrite(PIN_BUZZER, LOW);
+
+        mostrarMensaje("Datos Borrados", "Reiniciando...");
+        delay(1500);
+        ESP.restart(); // Reinicia la placa de cero
+      }
+    }
+  } else {
+    // Si se suelta el botón antes de los 5 segundos
+    if (botonFuePresionado) {
+      botonFuePresionado = false;
+      Serial.println("Se soltó el botón antes de tiempo.");
     }
   }
 }
@@ -440,6 +488,7 @@ void setup() {
   Serial.begin(115200);
 
   pinMode(PIN_BUZZER, OUTPUT);
+  pinMode(PIN_BOTON, INPUT_PULLUP); // Configurar GPIO 0 con resistencia interna
   pinMode(PIN_IN1, OUTPUT);
   pinMode(PIN_IN2, OUTPUT);
   pinMode(PIN_IN3, OUTPUT);
@@ -456,12 +505,14 @@ void setup() {
   lcd.backlight();
   mostrarMensaje("Iniciando...", "Pastillero ESP32");
 
+  // Cargar alarmas guardadas en la memoria NVS
   cargarAlarmasDesdeNVS();
 
   WiFiManager wm;
   mostrarMensaje("Conectando WiFi...", "o AP: Pastillero");
 
-  wm.resetSettings(); 
+  // OJO: Quitamos wm.resetSettings() para que recuerde el Wi-Fi al reiniciarse.
+  // Solo se borrará el WiFi si mantienes apretado el botón GPIO 0 por 5 segundos.
   wm.setConfigPortalTimeout(120);
 
   if (!wm.autoConnect("Pastillero")) {
@@ -491,6 +542,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  verificarHardReset(); // Monitoreo constante del botón GPIO 0
 
   unsigned long ahora = millis();
   if (ahora - ultimoChequeo >= INTERVALO_CHEQUEO_MS) {
