@@ -30,7 +30,6 @@ export default function Index() {
 
   const [ipEsp, setIpEsp] = useState("");
   const [buscando, setBuscando] = useState(false);
-  const [cargando, setCargando] = useState(false);
   const [medicamentos, setMedicamentos] = useState<Medicamento[]>([]);
   const [mostrarManual, setMostrarManual] = useState(true);
 
@@ -90,6 +89,7 @@ export default function Index() {
     setBuscando(true);
     const destinosDirectos = ["pastillero.local", "192.168.4.1"];
     
+    // 1. Intento directo por mDNS y IP de Access Point
     for (const host of destinosDirectos) {
       try {
         const res = await peticionConTimeout(`http://${host}/identificar`, { method: "GET" }, 1500);
@@ -107,6 +107,7 @@ export default function Index() {
       } catch (e) {}
     }
 
+    // 2. Barrido en subredes comunes (192.168.1.x y 192.168.0.x)
     const subredes = ["192.168.1.", "192.168.0."];
     let encontrado = false;
 
@@ -144,34 +145,9 @@ export default function Index() {
     }
 
     if (!encontrado) {
-      Alert.alert("No encontrado", "Verifica que el celular y la ESP32 compartan la misma red Wi-Fi.");
+      Alert.alert("No encontrado", "Verifica que el celular y la ESP32 compartan la misma red Wi-Fi o red del instituto.");
     }
     setBuscando(false);
-  };
-
-  const probarConexion = async () => {
-    if (!ipEsp) {
-      Alert.alert("Atención", "Primero debes vincular el pastillero.");
-      return;
-    }
-    setCargando(true);
-    try {
-      const res = await peticionConTimeout(`http://${ipEsp}/conectar`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      }, 3000);
-      
-      if (res.ok) {
-        Alert.alert("¡Conexión Exitosa!", "La comunicación con la ESP32 funciona correctamente.");
-        await cargarAlarmasDesdeESP32(ipEsp);
-      } else {
-        Alert.alert("Error", "El dispositivo respondió con un error de servidor.");
-      }
-    } catch (e) {
-      Alert.alert("Error de comunicación", "No se pudo comunicar con el pastillero.");
-    } finally {
-      setCargando(false);
-    }
   };
 
   const seleccionarDia = (dia: string) => {
@@ -305,16 +281,6 @@ export default function Index() {
         <TouchableOpacity style={styles.botonBuscar} onPress={buscarPastilleroEnRed} disabled={buscando}>
           {buscando ? <ActivityIndicator color="#fff" /> : <Text style={styles.textoBoton}>🔍 Buscar Pastillero</Text>}
         </TouchableOpacity>
-
-        {ipEsp !== "" && (
-          <TouchableOpacity
-            style={[styles.botonBuscar, { backgroundColor: "#2196F3", marginTop: 8 }]}
-            onPress={probarConexion}
-            disabled={cargando}
-          >
-            <Text style={styles.textoBoton}>🔌 Probar Comunicación</Text>
-          </TouchableOpacity>
-        )}
       </View>
 
       {/* FORMULARIO */}
@@ -396,14 +362,14 @@ export default function Index() {
         </View>
       ) : (
         medicamentos.map((item, index) => {
-          let colorBadge = "#ff9800"; // Naranja para Pendiente
+          let colorBadge = "#ff9800";
           let textoEstado = "⏳ Pendiente";
 
           if (item?.estado === "Pastilla dispensada") {
-            colorBadge = "#0288D1"; // Azul cuando el motor gira y cae la pastilla
+            colorBadge = "#0288D1";
             textoEstado = "💊 Pastilla dispensada";
           } else if (item?.estado === "Tomada") {
-            colorBadge = "#4CAF50"; // Verde
+            colorBadge = "#4CAF50";
             textoEstado = "✓ Tomada";
           }
 

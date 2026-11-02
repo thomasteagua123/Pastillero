@@ -25,7 +25,7 @@ int totalAlarmas = 0;
 
 // --- DECLARACIÓN DE PERIFÉRICOS ---
 LiquidCrystal_I2C lcd(0x27, 16, 2);
-WebServer server(80);
+WebServer server(8080);
 Preferences preferences;
 
 // --- CONFIGURACIÓN DE PINES ---
