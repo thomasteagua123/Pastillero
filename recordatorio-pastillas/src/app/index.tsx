@@ -14,6 +14,7 @@ type Medicamento = {
   id: number;
   tipo: string;
   fechaHoraTexto: string;
+  pesoOrden: number; // Valor numérico exacto para ordenar respetando día y hora
   estado: "Pendiente" | "Pastilla dispensada" | "Tomada";
 };
 
@@ -63,6 +64,7 @@ export default function Index() {
               id: item.id || (Date.now() + index),
               tipo: item.tipo || "Medicamento",
               fechaHoraTexto: `Programado a las ${hStr}:${mStr} hs`,
+              pesoOrden: index,
               estado: item.estado || "Pendiente",
             };
           });
@@ -181,8 +183,17 @@ export default function Index() {
 
     const horaBase = parseInt(partes[0], 10);
     const minutoBase = parseInt(partes[1], 10);
+    const nuevosItems: Medicamento[] = [];
 
-    // MODO INTERVALO: Usa new Date() automáticamente para las 7 tomas consecutivas
+    // Función auxiliar para calcular un "peso" numérico único basado en Día de la semana + Hora
+    // Esto asegura que Lunes siempre esté antes que Martes, sin importar la hora.
+    const calcularPesoOrden = (diaIndex: number, h: number, m: number) => {
+      // diaIndex: 0 (Dom), 1 (Lun), 2 (Mar), etc. 
+      // Ajustamos para que la semana empiece el Lunes (Lun=1 ... Dom=7)
+      let ordenDia = diaIndex === 0 ? 7 : diaIndex;
+      return (ordenDia * 1440) + (h * 60) + m; // 1440 minutos que tiene un día
+    };
+
     if (modoSeleccionado === "intervalo") {
       const saltoHoras = parseInt(intervaloHoras, 10) || 8;
       const fechaBase = new Date();
@@ -193,7 +204,8 @@ export default function Index() {
         
         const hCalculada = fechaToma.getHours();
         const mCalculada = fechaToma.getMinutes();
-        const nombreDia = diasSemanaNombres[fechaToma.getDay()];
+        const diaIndex = fechaToma.getDay();
+        const nombreDia = diasSemanaNombres[diaIndex];
 
         const hStr = hCalculada < 10 ? `0${hCalculada}` : `${hCalculada}`;
         const mStr = mCalculada < 10 ? `0${mCalculada}` : `${mCalculada}`;
@@ -202,19 +214,17 @@ export default function Index() {
         const etiquetaToma = `${tipo.trim()} (Toma ${i + 1}/7)`;
         const textoVisual = `${nombreDia} ${hStr}:${mStr} hs`;
 
-        const nuevoMedicamento: Medicamento = {
+        nuevosItems.push({
           id: nuevoId,
           tipo: etiquetaToma,
           fechaHoraTexto: textoVisual,
+          pesoOrden: calcularPesoOrden(diaIndex, hCalculada, mCalculada),
           estado: "Pendiente",
-        };
+        });
 
-        setMedicamentos((prev) => (Array.isArray(prev) ? [...prev, nuevoMedicamento] : [nuevoMedicamento]));
         enviarHorarioAESP32(nuevoId, etiquetaToma, hCalculada, mCalculada);
       }
-    } 
-    // MODO DIARIO: Utiliza los días seleccionados manualmente por el usuario
-    else {
+    } else {
       if (diasSeleccionados.length === 0) {
         Alert.alert("Atención", "Selecciona al menos un día de la semana para el modo diario.");
         return;
@@ -228,17 +238,27 @@ export default function Index() {
         const etiquetaDia = `${tipo.trim()} (${dia})`;
         const textoVisual = `${dia} a las ${hStr}:${mStr} hs`;
 
-        const nuevoMedicamento: Medicamento = {
+        const diaIndex = diasSemanaOriginales.indexOf(dia) + 1; // 1 para Lun, 2 para Mar, etc.
+
+        nuevosItems.push({
           id: nuevoId,
           tipo: etiquetaDia,
           fechaHoraTexto: textoVisual,
+          pesoOrden: calcularPesoOrden(diaIndex, horaBase, minutoBase),
           estado: "Pendiente",
-        };
+        });
 
-        setMedicamentos((prev) => (Array.isArray(prev) ? [...prev, nuevoMedicamento] : [nuevoMedicamento]));
         enviarHorarioAESP32(nuevoId, etiquetaDia, horaBase, minutoBase);
       });
     }
+
+    setMedicamentos((prev) => {
+      const listaActual = Array.isArray(prev) ? prev : [];
+      const listaCombinada = [...listaActual, ...nuevosItems];
+      // Ordenamos estrictamente por el peso cronológico real (Día + Hora)
+      listaCombinada.sort((a, b) => a.pesoOrden - b.pesoOrden);
+      return listaCombinada;
+    });
 
     setTipo("");
     setHora("");
@@ -266,14 +286,15 @@ export default function Index() {
 
       <View style={styles.manualContainer}>
         <TouchableOpacity style={styles.manualHeader} onPress={() => setMostrarManual(!mostrarManual)}>
-          <Text style={styles.manualTitulo}>📖 Guía de Carga Física</Text>
+          <Text style={styles.manualTitulo}>📖 Guía de Carga Física y Lógica</Text>
           <Text style={styles.manualToggleText}>{mostrarManual ? "Ocultar ▲" : "Ver guía ▼"}</Text>
         </TouchableOpacity>
 
         {mostrarManual && (
           <View style={styles.manualCuerpo}>
             <Text style={styles.pasoTexto}>⚠️ Compartimento 1: VACÍO (Posición de inicio).</Text>
-            <Text style={styles.pasoTexto}>✅ Carga de pastillas del 2 al 8 (máximo 7 compartimentos).</Text>
+            <Text style={styles.pasoTexto}>✅ Orden estricto: Primero por Día de la semana, luego por Hora.</Text>
+            <Text style={styles.pasoTexto}>Compartimento 2 = Primer turno de la semana, Compartimento 3 = Siguiente, etc.</Text>
           </View>
         )}
       </View>
@@ -357,7 +378,7 @@ export default function Index() {
         </TouchableOpacity>
       </View>
 
-      <Text style={styles.tituloLista}>Estado de Medicación</Text>
+      <Text style={styles.tituloLista}>Estado de Medicación (Ordenado por Día y Hora)</Text>
 
       {!Array.isArray(medicamentos) || medicamentos.length === 0 ? (
         <View style={styles.sinMedicamentos}>
@@ -376,10 +397,14 @@ export default function Index() {
             textoEstado = "✓ Tomada";
           }
 
+          const numCompartimento = (index % 7) + 2;
+
           return (
             <View style={styles.fila} key={item?.id || index}>
               <View style={styles.informacion}>
-                <Text style={styles.tipoMedicamento}>{item?.tipo || "Sin nombre"}</Text>
+                <Text style={styles.tipoMedicamento}>
+                  Compartimento #{numCompartimento}: {item?.tipo || "Sin nombre"}
+                </Text>
                 <Text style={styles.horaMedicamento}>📅 {item?.fechaHoraTexto || "Pendiente"}</Text>
                 
                 <View style={[styles.badgeEstado, { backgroundColor: colorBadge }]}>
