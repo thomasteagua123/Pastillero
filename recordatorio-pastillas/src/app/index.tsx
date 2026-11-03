@@ -13,12 +13,12 @@ import {
 type Medicamento = {
   id: number;
   tipo: string;
-  hora: string;
-  dias: string[];
+  fechaHoraTexto: string;
   estado: "Pendiente" | "Pastilla dispensada" | "Tomada";
 };
 
-const diasSemana = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+const diasSemanaNombres = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+const diasSemanaOriginales = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 
 export default function Index() {
   const [tipo, setTipo] = useState("");
@@ -33,19 +33,11 @@ export default function Index() {
   const [medicamentos, setMedicamentos] = useState<Medicamento[]>([]);
   const [mostrarManual, setMostrarManual] = useState(true);
 
-  const peticionConTimeout = async (
-    url: string,
-    opciones: RequestInit,
-    timeoutMs = 2500
-  ) => {
+  const peticionConTimeout = async (url: string, opciones: RequestInit, timeoutMs = 2500) => {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
-
     try {
-      const respuesta = await fetch(url, {
-        ...opciones,
-        signal: controller.signal,
-      });
+      const respuesta = await fetch(url, { ...opciones, signal: controller.signal });
       clearTimeout(id);
       return respuesta;
     } catch (error) {
@@ -70,8 +62,7 @@ export default function Index() {
             return {
               id: item.id || (Date.now() + index),
               tipo: item.tipo || "Medicamento",
-              hora: `${hStr}:${mStr}`,
-              dias: ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"],
+              fechaHoraTexto: `Programado a las ${hStr}:${mStr} hs`,
               estado: item.estado || "Pendiente",
             };
           });
@@ -89,7 +80,6 @@ export default function Index() {
     setBuscando(true);
     const destinosDirectos = ["pastillero.local", "192.168.4.1"];
     
-    // 1. Intento directo por mDNS y IP de Access Point
     for (const host of destinosDirectos) {
       try {
         const res = await peticionConTimeout(`http://${host}/identificar`, { method: "GET" }, 1500);
@@ -107,7 +97,6 @@ export default function Index() {
       } catch (e) {}
     }
 
-    // 2. Barrido en subredes comunes (192.168.1.x y 192.168.0.x)
     const subredes = ["192.168.1.", "192.168.0."];
     let encontrado = false;
 
@@ -145,7 +134,7 @@ export default function Index() {
     }
 
     if (!encontrado) {
-      Alert.alert("No encontrado", "Verifica que el celular y la ESP32 compartan la misma red Wi-Fi o red del instituto.");
+      Alert.alert("No encontrado", "Verifica que el celular y la ESP32 compartan la misma red.");
     }
     setBuscando(false);
   };
@@ -158,13 +147,7 @@ export default function Index() {
     }
   };
 
-  const enviarHorarioAESP32 = async (
-    idAlarma: number,
-    nombreMed: string,
-    horaNum: number,
-    minutoNum: number,
-    diasArray: string[]
-  ) => {
+  const enviarHorarioAESP32 = async (idAlarma: number, nombreMed: string, horaNum: number, minutoNum: number) => {
     if (!ipEsp) return;
     try {
       const ahora = new Date();
@@ -176,7 +159,6 @@ export default function Index() {
           tipo: nombreMed,
           hora: horaNum,
           minuto: minutoNum,
-          dias: diasArray,
           epoch: Math.floor(ahora.getTime() / 1000),
         }),
       });
@@ -186,8 +168,8 @@ export default function Index() {
   };
 
   const agregarMedicamento = () => {
-    if (!tipo.trim() || !hora.trim() || diasSeleccionados.length === 0) {
-      Alert.alert("Atención", "Por favor completa todos los campos.");
+    if (!tipo.trim() || !hora.trim()) {
+      Alert.alert("Atención", "Por favor completa el nombre y la hora.");
       return;
     }
 
@@ -200,38 +182,62 @@ export default function Index() {
     const horaBase = parseInt(partes[0], 10);
     const minutoBase = parseInt(partes[1], 10);
 
+    // MODO INTERVALO: Usa new Date() automáticamente para las 7 tomas consecutivas
     if (modoSeleccionado === "intervalo") {
       const saltoHoras = parseInt(intervaloHoras, 10) || 8;
-      
+      const fechaBase = new Date();
+      fechaBase.setHours(horaBase, minutoBase, 0, 0);
+
       for (let i = 0; i < 7; i++) {
-        let horaCalculada = (horaBase + (i * saltoHoras)) % 24;
+        const fechaToma = new Date(fechaBase.getTime() + (i * saltoHoras * 3600 * 1000));
+        
+        const hCalculada = fechaToma.getHours();
+        const mCalculada = fechaToma.getMinutes();
+        const nombreDia = diasSemanaNombres[fechaToma.getDay()];
+
+        const hStr = hCalculada < 10 ? `0${hCalculada}` : `${hCalculada}`;
+        const mStr = mCalculada < 10 ? `0${mCalculada}` : `${mCalculada}`;
+
         const nuevoId = Date.now() + i;
-        
-        const horaStr = `${horaCalculada < 10 ? "0" + horaCalculada : horaCalculada}:${minutoBase < 10 ? "0" + minutoBase : minutoBase}`;
-        
+        const etiquetaToma = `${tipo.trim()} (Toma ${i + 1}/7)`;
+        const textoVisual = `${nombreDia} ${hStr}:${mStr} hs`;
+
         const nuevoMedicamento: Medicamento = {
           id: nuevoId,
-          tipo: `${tipo.trim()} (Toma ${i + 1}/7)`,
-          hora: horaStr,
-          dias: diasSeleccionados,
+          tipo: etiquetaToma,
+          fechaHoraTexto: textoVisual,
           estado: "Pendiente",
         };
 
         setMedicamentos((prev) => (Array.isArray(prev) ? [...prev, nuevoMedicamento] : [nuevoMedicamento]));
-        enviarHorarioAESP32(nuevoId, nuevoMedicamento.tipo, horaCalculada, minutoBase, diasSeleccionados);
+        enviarHorarioAESP32(nuevoId, etiquetaToma, hCalculada, mCalculada);
       }
-    } else {
-      const nuevoId = Date.now();
-      const nuevoMedicamento: Medicamento = {
-        id: nuevoId,
-        tipo: tipo.trim(),
-        hora: hora.trim(),
-        dias: diasSeleccionados,
-        estado: "Pendiente",
-      };
+    } 
+    // MODO DIARIO: Utiliza los días seleccionados manualmente por el usuario
+    else {
+      if (diasSeleccionados.length === 0) {
+        Alert.alert("Atención", "Selecciona al menos un día de la semana para el modo diario.");
+        return;
+      }
 
-      setMedicamentos((prev) => (Array.isArray(prev) ? [...prev, nuevoMedicamento] : [nuevoMedicamento]));
-      enviarHorarioAESP32(nuevoId, tipo.trim(), horaBase, minutoBase, diasSeleccionados);
+      diasSeleccionados.forEach((dia, idx) => {
+        const nuevoId = Date.now() + idx;
+        const hStr = horaBase < 10 ? `0${horaBase}` : `${horaBase}`;
+        const mStr = minutoBase < 10 ? `0${minutoBase}` : `${minutoBase}`;
+        
+        const etiquetaDia = `${tipo.trim()} (${dia})`;
+        const textoVisual = `${dia} a las ${hStr}:${mStr} hs`;
+
+        const nuevoMedicamento: Medicamento = {
+          id: nuevoId,
+          tipo: etiquetaDia,
+          fechaHoraTexto: textoVisual,
+          estado: "Pendiente",
+        };
+
+        setMedicamentos((prev) => (Array.isArray(prev) ? [...prev, nuevoMedicamento] : [nuevoMedicamento]));
+        enviarHorarioAESP32(nuevoId, etiquetaDia, horaBase, minutoBase);
+      });
     }
 
     setTipo("");
@@ -258,7 +264,6 @@ export default function Index() {
       <Text style={styles.titulo}>💊 Control de Pastillero</Text>
       <Text style={styles.subtitulo}>Asistente Automatizado de Medicación</Text>
 
-      {/* GUÍA MANUAL */}
       <View style={styles.manualContainer}>
         <TouchableOpacity style={styles.manualHeader} onPress={() => setMostrarManual(!mostrarManual)}>
           <Text style={styles.manualTitulo}>📖 Guía de Carga Física</Text>
@@ -273,7 +278,6 @@ export default function Index() {
         )}
       </View>
 
-      {/* ESTADO DE CONEXIÓN */}
       <View style={styles.configIpContainer}>
         <Text style={styles.textoEstado}>
           {ipEsp ? `✅ Conectado a: ${ipEsp}` : "⚠ Pastillero no detectado"}
@@ -283,7 +287,6 @@ export default function Index() {
         </TouchableOpacity>
       </View>
 
-      {/* FORMULARIO */}
       <View style={styles.formulario}>
         <Text style={styles.etiqueta}>Medicamento</Text>
         <TextInput style={styles.input} placeholder="Ej: Paracetamol" value={tipo} onChangeText={setTipo} />
@@ -309,7 +312,7 @@ export default function Index() {
           </TouchableOpacity>
         </View>
 
-        {modoSeleccionado === "intervalo" && (
+        {modoSeleccionado === "intervalo" ? (
           <>
             <Text style={styles.etiqueta}>Repetir cada (Horas)</Text>
             <TextInput
@@ -320,40 +323,40 @@ export default function Index() {
               keyboardType="numeric"
             />
           </>
+        ) : (
+          <>
+            <Text style={styles.etiqueta}>Días de la semana</Text>
+            <View style={styles.diasContainer}>
+              {diasSemanaOriginales.map((dia) => {
+                const seleccionado = diasSeleccionados.includes(dia);
+                return (
+                  <TouchableOpacity
+                    key={dia}
+                    style={[styles.dia, seleccionado && styles.diaSeleccionado]}
+                    onPress={() => seleccionarDia(dia)}
+                  >
+                    <Text style={[styles.textoDia, seleccionado && styles.textoDiaSeleccionado]}>{dia}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </>
         )}
 
-        <Text style={styles.etiqueta}>Hora Inicial (HH:MM)</Text>
+        <Text style={styles.etiqueta}>Hora (HH:MM)</Text>
         <TextInput
           style={styles.input}
-          placeholder="12:30"
+          placeholder="20:00"
           value={hora}
           onChangeText={setHora}
-          keyboardType="default"
           maxLength={5}
         />
-
-        <Text style={styles.etiqueta}>Días programados</Text>
-        <View style={styles.diasContainer}>
-          {diasSemana.map((dia) => {
-            const seleccionado = diasSeleccionados.includes(dia);
-            return (
-              <TouchableOpacity
-                key={dia}
-                style={[styles.dia, seleccionado && styles.diaSeleccionado]}
-                onPress={() => seleccionarDia(dia)}
-              >
-                <Text style={[styles.textoDia, seleccionado && styles.textoDiaSeleccionado]}>{dia}</Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
 
         <TouchableOpacity style={styles.botonAgregar} onPress={agregarMedicamento}>
           <Text style={styles.textoBoton}>+ Guardar Horario</Text>
         </TouchableOpacity>
       </View>
 
-      {/* VISUALIZACIÓN DE ESTADO DE ADHERENCIA */}
       <Text style={styles.tituloLista}>Estado de Medicación</Text>
 
       {!Array.isArray(medicamentos) || medicamentos.length === 0 ? (
@@ -377,8 +380,7 @@ export default function Index() {
             <View style={styles.fila} key={item?.id || index}>
               <View style={styles.informacion}>
                 <Text style={styles.tipoMedicamento}>{item?.tipo || "Sin nombre"}</Text>
-                <Text style={styles.horaMedicamento}>🕐 {item?.hora || "00:00"} hs</Text>
-                <Text style={styles.diasMedicamento}>📅 {item?.dias?.join(", ") || "Todos los días"}</Text>
+                <Text style={styles.horaMedicamento}>📅 {item?.fechaHoraTexto || "Pendiente"}</Text>
                 
                 <View style={[styles.badgeEstado, { backgroundColor: colorBadge }]}>
                   <Text style={styles.textoBadge}>{textoEstado}</Text>
@@ -430,7 +432,6 @@ const styles = StyleSheet.create({
   informacion: { flex: 1 },
   tipoMedicamento: { fontSize: 16, fontWeight: "bold", color: "#222" },
   horaMedicamento: { fontSize: 13, color: "#444", marginTop: 2 },
-  diasMedicamento: { fontSize: 12, color: "#777", marginTop: 2 },
   badgeEstado: { marginTop: 8, alignSelf: "flex-start", paddingVertical: 4, paddingHorizontal: 8, borderRadius: 6 },
   textoBadge: { color: "white", fontSize: 12, fontWeight: "bold" },
   botonEliminar: { backgroundColor: "#ef5350", paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6 },
