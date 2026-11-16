@@ -1,56 +1,76 @@
-# Welcome to your Expo app 👋
+Dispensador Automático de Medicación
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Es un pastillero inteligente diseñado para simplificar y asegurar el cumplimiento de tratamientos médicos diarios. Combina un dispensador físico automatizado con una aplicación móvil intuitiva que organiza tus horarios, te alerta en el momento exacto de cada toma y entrega la dosis correspondiente de forma automática, evitando olvidos o confusiones.
+Características Principales
 
-## Get started
+    Dispensación Automática: A la hora programada, el equipo gira su carrusel interno, emite una alerta sonora y muestra en su pantalla el nombre del medicamento que corresponde tomar.
 
-1. Install dependencies
+    Dos Modos de Programación:
 
-   ```bash
-   npm install
-   ```
+        Días específicos: Ideal para medicación fija semanal (por ejemplo, lunes, miércoles y viernes a las 09:00 hs).
 
-2. Start the app
+        Por intervalos horarios: Pensado para tratamientos continuos (como antibióticos cada 8 o 12 horas). Solo ingresás la primera toma y el sistema calcula las 7 dosis siguientes de forma automática, incluso si cambian de día durante la madrugada.
 
-   ```bash
-   npx expo start
-   ```
+    Ordenamiento Inteligente: Sin importar en qué orden cargues tus medicamentos en la app, el sistema los organiza cronológicamente y te indica en qué compartimento exacto colocar cada pastilla.
 
-In the output, you'll find options to open the app in a
+    Funciona sin Internet: Una vez vinculado a tu router hogareño, el pastillero y la aplicación se comunican de manera local. Si se cae el servicio de internet en tu casa, tus alarmas siguen funcionando con total normalidad.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+    Memoria Permanente: Ante un corte de luz, el equipo conserva tanto tu conexión Wi-Fi como todos tus horarios guardados sin necesidad de volver a configurarlos.
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+Guía de Inicio Rápido
+1. Conexión inicial al Wi-Fi
 
-## Get a fresh project
+Al enchufar tu Pastillero Inteligente por primera vez, la pantalla del dispositivo mostrará el mensaje AP: Pastillero.
 
-When you're ready, run:
+    Abrí la configuración de Wi-Fi de tu teléfono celular y conectate a la red llamada Pastillero.
 
-```bash
-npm run reset-project
-```
+    Se abrirá automáticamente una pantalla de bienvenida (si no aparece, abrí tu navegador web e ingresá a 192.168.4.1).
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+    Seleccioná la red Wi-Fi de tu hogar, ingresá tu contraseña y tocá Guardar.
 
-### Other setup steps
+    El equipo se reiniciará y mostrará en su pantalla que ya se encuentra conectado.
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+2. Vinculación con la App
 
-## Learn more
+    Asegurate de que tu celular esté conectado a la misma red Wi-Fi que el pastillero.
 
-To learn more about developing your project with Expo, look at the following resources:
+    Abrí la aplicación Recordatorio Inteligente en tu teléfono y presioná el botón Buscar Pastillero.
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+    En pocos segundos, la app detectará el dispositivo y quedará lista para usar.
 
-## Join the community
+Cómo Usar tu Pastillero Inteligente Día a Día
+Paso 1: Agendar un medicamento
 
-Join our community of developers creating universal apps.
+En la pantalla principal de la app, completá los datos de tu receta:
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+    Escribí el nombre del medicamento.
+
+    Elegí si se toma en días específicos o cada X horas e ingresá el horario.
+
+    Tocá Guardar Horario.
+
+Paso 2: Cargar las pastillas en el disco
+
+Mirá la lista de Estado de Medicación en tu celular. La app te indicará el número de compartimento exacto donde debés colocar cada dosis:
+
+    Compartimento #1: Debe quedar siempre vacío, ya que es la posición de inicio y calibración del equipo.
+
+    Compartimentos #2 al #8: Colocá cada pastilla en el número de hueco que te indica su tarjeta en la aplicación.
+
+Paso 3: Retirar tu dosis
+
+    Al llegar la hora indicada, sonará la alarma del pastillero y verás el nombre de la pastilla en su pantalla.
+
+    El disco girará automáticamente dejando la dosis lista para retirar.
+
+    En tu teléfono, el estado de esa toma cambiará de Pendiente a Pastilla dispensada.
+
+    Cada medianoche (00:00 hs), el sistema reinicia automáticamente los estados para comenzar un nuevo día.
+
+Restauración de Fábrica
+
+Si te mudás, cambiás de router Wi-Fi o querés borrar todas las alarmas para iniciar un tratamiento nuevo desde cero:
+
+    Mantené presionado el botón de reinicio del equipo durante 5 segundos seguidos.
+
+    La pantalla confirmará que los datos fueron borrados, sonará un aviso largo y el pastillero volverá a su estado inicial listo para una nueva configuración.
